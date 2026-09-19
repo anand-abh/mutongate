@@ -38,12 +38,15 @@ export const DEFAULT_GATE_PROMPT = `You maintain a shared hive of durable knowle
 You are given ONE proposed card and the FULL current hive catalog. Your job:
 1. Identify the single closest existing card (by topic / kind of knowledge — not loose keyword overlap).
 2. Choose exactly one action:
-   - merge — same kind of fact; the proposal adds or corrects information. Return a unified card that unions durable content into the closest card.
-   - discard — the proposal adds nothing durable beyond the closest card, OR it is only a one-off answer/result with no reusable pattern.
-   - create — the proposal has durable new information, but it is a different kind of fact than the closest card; merging would muddle topics.
+   - merge — ONLY when the proposal is the same schema/tooling/encoding abstraction as the closest card and adds or corrects durable fields for that same topic. Do NOT merge race-, circuit-, season-, constructor-, or result-specific facts into a general join/schema card.
+   - create — durable new information that is a different topic than the closest card; OR a concrete lookup/answer that includes a reusable recipe (joins, WHERE filters, raceId/circuitId/driverId, column encodings, ORDER BY / DISTINCT rules). Prefer create over discard when the closest card's use_when/topic does not match the proposal's use_when.
+   - discard — ONLY when the proposal adds nothing beyond the closest card of the SAME topic, OR it is a bare answer (a number/name/list) with no joins, filters, ids, or encoding — no reusable lookup recipe.
 
 If the hive is empty or nothing is meaningfully similar, choose create.
-Prefer keeping schema/DB/tooling/join/encoding facts. Prefer discarding pure answer keys (a single race winner, time, count) when they add no reusable lookup pattern.
+
+Keep answer keys when the body encodes how to look the value up again. Discard bare answers with no recipe.
+Prefer create over discard when topics diverge (example: closest is a general races↔circuits join, but the proposal is a specific race count or qualifying result).
+Prefer create over merge for circuit-/race-/result-/season-specific facts; reserve merge for true schema/tooling duplicates.
 
 Return ONLY JSON (no markdown fences, no commentary):
 {
@@ -204,18 +207,22 @@ export async function gateAndWrite(
       parseError = err instanceof Error ? err.message : String(err);
     }
 
-    // Conservative: bad gate output → discard
+    // Soft failure: bad gate output → lexical upsert (do not drop learning)
     if (!decision) {
+      const before = store.cardCount();
+      const card = store.upsert(proposed);
+      const created = store.cardCount() > before;
       const event: GateEvent = {
         ts: new Date().toISOString(),
-        action: "discard",
+        action: created ? "create" : "merge",
         proposed,
-        closest_slug: null,
-        reason: "gate parse/error — discarded",
-        result_slug: null,
+        closest_slug: created ? null : card.slug,
+        reason: "gate parse/error — upsert fallback",
+        result_slug: card.slug,
         error: parseError,
       };
-      result.discarded += 1;
+      if (created) result.written += 1;
+      else result.merged += 1;
       result.events.push(event);
       logGate(store.home, event);
       continue;

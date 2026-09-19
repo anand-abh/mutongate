@@ -11,7 +11,14 @@ After stock reflect proposes 0–5 cards, each proposal is gated by the **same c
 | `discard` | no write |
 
 Empty hive → create without an LLM call.  
+Unparsable / completer error → lexical `upsert` fallback (not discard).  
 `MUTON_CARD_GATE=0` disables the gate (lexical upsert only).
+
+## Policy (for lower exploratory `db_queries`)
+
+- Keep answer keys when the body includes a reusable lookup recipe (joins, filters, ids, encodings).
+- Prefer **create** over **discard** when the closest card is a different topic.
+- Prefer **create** over **merge** for race/circuit/result/season-specific facts; merge only true schema/tooling duplicates.
 
 ## System prompt
 

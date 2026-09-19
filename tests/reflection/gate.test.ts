@@ -72,6 +72,7 @@ describe("gateAndWrite", () => {
       const result = await gateAndWrite(
         async (req) => {
           expect(req.system).toBe(DEFAULT_GATE_PROMPT);
+          expect(req.system).toContain("reusable recipe");
           expect(req.user).toContain("## Proposed card");
           expect(req.user).toContain("existing");
           return JSON.stringify({
@@ -164,16 +165,19 @@ describe("gateAndWrite", () => {
     }
   });
 
-  test("unparsable gate output discards", async () => {
+  test("unparsable gate output upserts instead of discarding", async () => {
     const root = mkdtempSync(join(tmpdir(), "muton-gate-"));
     const store = new CardStore(root);
     store.writeNew({ title: "X", use_when: "u", body: "b" });
     try {
       const result = await gateAndWrite(async () => "not json", store, [
-        { title: "Y", use_when: "u", body: "b2" },
+        { title: "Y", use_when: "when y", body: "distinct fact about y" },
       ]);
-      expect(result.discarded).toBe(1);
-      expect(store.cardCount()).toBe(1);
+      expect(result.discarded).toBe(0);
+      expect(result.written + result.merged).toBe(1);
+      expect(store.cardCount()).toBeGreaterThanOrEqual(1);
+      const log = readFileSync(join(root, "logs", "gate.log"), "utf8");
+      expect(log).toContain("upsert fallback");
     } finally {
       store.close();
       rmSync(root, { recursive: true, force: true });
