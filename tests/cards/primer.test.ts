@@ -130,7 +130,7 @@ describe("schema primer", () => {
     }
   });
 
-  test("hybrid search always pins primer", () => {
+  test("hybrid search always pins primer (n+m+1)", () => {
     const root = mkdtempSync(join(tmpdir(), "muton-primer-search-"));
     const store = new CardStore(root);
     try {
@@ -138,6 +138,11 @@ describe("schema primer", () => {
         title: "Stripe webhook",
         use_when: "payments",
         body: "idempotency keys",
+      });
+      store.writeNew({
+        title: "Other card",
+        use_when: "misc",
+        body: "unrelated fact about widgets",
       });
       store.upsertPrimer({
         title: "Schema Primer",
@@ -149,6 +154,7 @@ describe("schema primer", () => {
         kQuestion: 0,
       });
       expect(hits[0]?.slug).toBe(PRIMER_SLUG);
+      expect(hits.length).toBe(2); // primer + 1 instruction hit
       expect(channels?.some((c) => c.name === "primer" && c.n_hits === 1)).toBe(
         true,
       );

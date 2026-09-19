@@ -1,11 +1,11 @@
-# Card gate
+# Card gate (primer only)
 
 After stock reflect:
 
 1. Exactly one **primer** proposal (`kind: "primer"`) is judged by `DEFAULT_PRIMER_PROMPT` → merge into slug `primer` or discard.
-2. Optional **general** cards (0–5) are gated by `DEFAULT_GATE_PROMPT` when `MUTON_CARD_GATE=1`.
+2. Optional **general** cards (0–5) are always written with lexical upsert (`writeProposedCards`) — **no LLM gate**. They populate the hive freely.
 
-The Schema Primer is **always pinned** on search (hybrid and plain).
+The Schema Primer is **always pinned** on search (hybrid and plain), so hybrid retrieval is **n + m + 1** when a primer exists.
 
 ## Primer judge
 
@@ -16,16 +16,15 @@ The Schema Primer is **always pinned** on search (hybrid and plain).
 
 Empty primer + parse error → create from proposal. Existing primer + parse error → discard (avoid bloat).
 
-## General gate
+The primer judge always runs (independent of `MUTON_CARD_GATE`).
 
-| Action | Effect |
-|--------|--------|
-| `create` | `writeNew` |
-| `merge` | `update(closest_slug, …)` |
-| `discard` | no write |
+## General cards
 
-`MUTON_CARD_GATE=0` skips the general LLM gate (lexical upsert) but **still** runs the primer judge.
+Ungated. `store.upsert` merges near-duplicates by title/content overlap.
+
+`gateAndWrite` remains available for tests / tooling but is **not** used on the reflect commit path.
 
 ## Logs
 
-`$MUTON_HOME/logs/gate.log` — JSONL for both primer and general decisions.
+`$MUTON_HOME/logs/gate.log` — JSONL for primer (and any manual `gateAndWrite`) decisions.
+`$MUTON_HOME/logs/reflect.log` — `commit primer+ungated-hive …` lines.

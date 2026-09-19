@@ -1,6 +1,6 @@
 # mutongate
 
-Private Muton fork: **hybrid Card search** + **stock reflect** + **LLM card gate** (create / merge / discard).
+Private Muton fork: **hybrid Card search** (n+m+primer pin) + **stock reflect** (0–5 ungated general + primer judge).
 
 Version: `0.2.1-qr3-cardgate`
 
@@ -29,7 +29,7 @@ echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
 | `MUTON_HYBRID=1` | Dual FTS (instruction + question) |
 | `MUTON_HYBRID_K_INSTRUCTION` | Instruction-channel k (e.g. `3`) |
 | `MUTON_HYBRID_K_QUESTION` | Question-channel k (e.g. `3`) |
-| `MUTON_CARD_GATE=1` | LLM gate after reflect (default on) |
+| `MUTON_CARD_GATE` | Legacy; general cards are always ungated. Primer judge always runs. |
 | `MUTON_MODEL` / `MUTON_API_KEY` | Model for reflect + gate |
 | `OPENAI_API_KEY` | Passed through to the agent |
 

@@ -5,7 +5,7 @@ import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
 import { createCompleter } from "./complete/index.ts";
-import { cardGateEnabled, gateAndWrite, gatePrimerProposal } from "./gate.ts";
+import { gatePrimerProposal } from "./gate.ts";
 import { loadReflectionPrompt } from "./prompt.ts";
 import { writeProposedCards } from "./writer.ts";
 
@@ -54,7 +54,7 @@ async function commitProposals(
   let merged = 0;
   let discarded = 0;
 
-  // Primer judge always runs (merge vs discard into the single primer card).
+  // Primer judge: merge vs discard into the single always-pinned primer card.
   for (const p of primers) {
     const r = await gatePrimerProposal(complete, store, p, {
       host: opts.host,
@@ -66,28 +66,13 @@ async function commitProposals(
     skipped += r.skipped;
   }
 
-  if (!cardGateEnabled()) {
-    const result = writeProposedCards(store, general);
-    written += result.written.length;
-    skipped += result.skipped.length;
-    log(
-      store.home,
-      `commit primer+ungated wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped}`,
-    );
-    return { written, skipped, merged, discarded };
-  }
-
-  const gated = await gateAndWrite(complete, store, general, {
-    host: opts.host,
-    cwd: opts.cwd ?? join(store.home, "scratch"),
-  });
-  written += gated.written;
-  merged += gated.merged;
-  discarded += gated.discarded;
-  skipped += gated.skipped;
+  // General hive cards: always ungated lexical upsert (no LLM card gate).
+  const result = writeProposedCards(store, general);
+  written += result.written.length;
+  skipped += result.skipped.length;
   log(
     store.home,
-    `gate wrote=${gated.written} merged=${gated.merged} discarded=${gated.discarded} skipped=${gated.skipped}`,
+    `commit primer+ungated-hive wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped} general=${result.written.length}`,
   );
   return { written, skipped, merged, discarded };
 }
