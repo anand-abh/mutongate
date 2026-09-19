@@ -2,6 +2,9 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import {
   type Card,
+  INITIAL_SLUG,
+  INITIAL_TITLE,
+  INITIAL_USE_WHEN,
   normalizePrimerFields,
   parseCard,
   PRIMER_SLUG,
@@ -150,6 +153,27 @@ export class CardStore {
     const iso = now.toISOString();
     return this.persist({
       slug: PRIMER_SLUG,
+      ...fields,
+      created_at: iso,
+      updated_at: iso,
+    });
+  }
+
+  /**
+   * Write/replace the fixed `initial` card (first-N-step chat logs).
+   * `body` should be the full card body after merging step sections.
+   */
+  upsertInitial(body: string, now = new Date()): Card {
+    const fields: ProposeInput = {
+      title: INITIAL_TITLE,
+      use_when: INITIAL_USE_WHEN,
+      body: body.trim(),
+    };
+    const existing = this.read(INITIAL_SLUG);
+    if (existing) return this.update(INITIAL_SLUG, fields, now);
+    const iso = now.toISOString();
+    return this.persist({
+      slug: INITIAL_SLUG,
       ...fields,
       created_at: iso,
       updated_at: iso,

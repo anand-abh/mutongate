@@ -13907,41 +13907,138 @@ function normalizeHookInput(eventName, rawInput, hostHint) {
 }
 
 // src/hooks/prompt-submit.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync5, readFileSync as readFileSync6, writeFileSync as writeFileSync3 } from "node:fs";
 
 // src/search/index.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
 
-// src/cards/primer.ts
-var PRIMER_SLUG = "primer";
-var PRIMER_TITLE = "Schema Primer";
-var PRIMER_USE_WHEN = "Starting any database-analytics question — durable schema, joins, encodings, and db-query constraints";
-function isPrimerProposal(p) {
-  if (typeof p.kind === "string" && p.kind.trim().toLowerCase() === "primer") {
-    return true;
+// src/cards/initial.ts
+import { existsSync, readFileSync } from "node:fs";
+var INITIAL_SLUG = "initial";
+var INITIAL_TITLE = "Initial";
+var INITIAL_USE_WHEN = "Every succeeding database-analytics step — chat logs from the first three steps";
+function initialStepWindow() {
+  const v = process.env.MUTON_INITIAL_STEPS;
+  if (v === undefined || v === "")
+    return 3;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 3;
+}
+function resolveStepNumber() {
+  for (const path of [
+    process.env.MUTON_STEP_PATH,
+    "/app/.step.txt"
+  ].filter((p) => Boolean(p))) {
+    try {
+      if (!existsSync(path))
+        continue;
+      const n = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
+      if (Number.isFinite(n) && n >= 1)
+        return n;
+    } catch {}
   }
-  const t = (p.title ?? "").trim().toLowerCase();
-  return t === "primer" || t === "schema primer";
+  for (const path of [
+    process.env.MUTON_QUESTION_PATH,
+    "/app/question.md"
+  ].filter((p) => Boolean(p))) {
+    try {
+      if (!existsSync(path))
+        continue;
+      const text = readFileSync(path, "utf8");
+      const m = /Question\s+(\d+)\s+of\s+\d+/i.exec(text);
+      if (m) {
+        const n = Number.parseInt(m[1], 10);
+        if (Number.isFinite(n) && n >= 1)
+          return n;
+      }
+    } catch {}
+  }
+  return null;
 }
-function normalizePrimerFields(body) {
-  return {
-    title: PRIMER_TITLE,
-    use_when: PRIMER_USE_WHEN,
-    body: body.trim()
-  };
+function shouldRecordInitial(step) {
+  if (step == null)
+    return false;
+  return step >= 1 && step <= initialStepWindow();
 }
-function mergePrimerBodies(existing, incoming) {
-  const a = existing.trim();
-  const b = incoming.trim();
-  if (!b)
-    return a;
-  if (!a)
-    return b;
-  if (a.includes(b))
-    return a;
-  return `${a}
+function transcriptToChatLog(raw, maxChars = 40000) {
+  const text = raw.trim();
+  if (!text)
+    return "";
+  const lines = text.split(`
+`);
+  const looksJsonl = lines.some((l) => {
+    const t = l.trim();
+    return t.startsWith("{") && t.includes('"type"');
+  });
+  if (!looksJsonl) {
+    return text.length > maxChars ? text.slice(-maxChars) : text;
+  }
+  const out = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t.startsWith("{"))
+      continue;
+    let row;
+    try {
+      row = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (row.type !== "message" || !row.message)
+      continue;
+    const role = (row.message.role ?? "unknown").toUpperCase();
+    const parts = flattenContent(row.message.content);
+    if (!parts)
+      continue;
+    out.push(`${role}:
+${parts}`);
+  }
+  const joined = out.join(`
 
-${b}`;
+`);
+  if (!joined) {
+    return text.length > maxChars ? text.slice(-maxChars) : text;
+  }
+  return joined.length > maxChars ? joined.slice(-maxChars) : joined;
+}
+function flattenContent(content) {
+  if (typeof content === "string")
+    return content.trim();
+  if (!Array.isArray(content))
+    return "";
+  const bits = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object")
+      continue;
+    if (part.type === "text" && typeof part.text === "string") {
+      bits.push(part.text.trim());
+    } else if (part.type === "toolCall" || part.type === "tool_use") {
+      const name = part.name ?? "tool";
+      const args = typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments ?? {});
+      bits.push(`[tool ${name}] ${String(args).slice(0, 500)}`);
+    } else if (part.type === "toolResult" || part.type === "tool_result") {
+      const out = typeof part.output === "string" ? part.output : JSON.stringify(part.output ?? part.text ?? "");
+      bits.push(`[tool result] ${String(out).slice(0, 800)}`);
+    }
+  }
+  return bits.filter(Boolean).join(`
+`).trim();
+}
+function mergeInitialStepBody(existing, step, chatLog) {
+  const section = `## Step ${step}
+
+${chatLog.trim()}`.trim();
+  const marker = `## Step ${step}`;
+  const cur = (existing ?? "").trim();
+  if (!cur)
+    return section;
+  if (cur.includes(marker)) {
+    const re = new RegExp(`## Step ${step}\\n[\\s\\S]*?(?=\\n## Step \\d+|$)`);
+    return cur.replace(re, section).trim();
+  }
+  return `${cur}
+
+${section}`.trim();
 }
 
 // src/search/bm25.ts
@@ -14081,7 +14178,7 @@ function rerank(hits, query) {
 }
 
 // src/search/rewrite.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 var BOILERPLATE = new Set([
   "formula",
   "database",
@@ -14136,8 +14233,8 @@ function resolveQuestionText(prompt) {
   ].filter((p) => Boolean(p));
   for (const path of candidates) {
     try {
-      if (existsSync(path)) {
-        const text = readFileSync(path, "utf8");
+      if (existsSync2(path)) {
+        const text = readFileSync2(path, "utf8");
         if (text.trim())
           return { text, source: "question_file" };
       }
@@ -14191,7 +14288,7 @@ function rewriteSearchQuery(prompt) {
 
 // src/search/index.ts
 var DEFAULT_K = 5;
-var DEFAULT_MAX_CHARS = 6000;
+var DEFAULT_MAX_CHARS = 1e5;
 var DEFAULT_K_INSTRUCTION = 3;
 var DEFAULT_K_QUESTION = 3;
 function envFlag(name) {
@@ -14212,8 +14309,8 @@ function readQuestionText() {
   ].filter((p) => Boolean(p));
   for (const path of candidates) {
     try {
-      if (existsSync2(path)) {
-        const text = readFileSync2(path, "utf8").trim();
+      if (existsSync3(path)) {
+        const text = readFileSync3(path, "utf8").trim();
         if (text)
           return text;
       }
@@ -14231,8 +14328,8 @@ function rankQuery(store, query, k, exclude, minScore) {
   }
   return ranked.slice(0, k);
 }
-function primerHit(store) {
-  const card = store.read(PRIMER_SLUG);
+function initialHit(store) {
+  const card = store.read(INITIAL_SLUG);
   if (!card)
     return null;
   return cardToHit(card, Number.POSITIVE_INFINITY);
@@ -14250,21 +14347,21 @@ function cardToHit(card, score) {
   };
 }
 function searchCardsHybrid(store, instruction, options = {}) {
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
   const kInst = options.kInstruction ?? envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
   const kQ = options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
   const exclude = new Set(options.excludeSlugs ?? []);
-  const pinned = primerHit(store);
+  const pinned = initialHit(store);
   if (pinned)
-    exclude.add(PRIMER_SLUG);
+    exclude.add(INITIAL_SLUG);
   const channels = [];
   if (pinned) {
     channels.push({
-      name: "primer",
+      name: "initial",
       query_chars: 0,
       query_head: "(pinned)",
       n_hits: 1,
-      slugs: [PRIMER_SLUG]
+      slugs: [INITIAL_SLUG]
     });
   }
   const instHits = rankQuery(store, instruction, kInst, exclude, options.minScore);
@@ -14303,7 +14400,7 @@ function searchCardsHybrid(store, instruction, options = {}) {
     context,
     rewrite: {
       original: instruction,
-      rewritten: question ? `[hybrid] primer+instruction[${kInst}]+question[${kQ}]` : `[hybrid] primer+instruction[${kInst}] only`,
+      rewritten: question ? `[hybrid] initial+instruction[${kInst}]+question[${kQ}]` : `[hybrid] initial+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt"
     },
     channels
@@ -14315,11 +14412,11 @@ function searchCards(store, query, options = {}) {
     return searchCardsHybrid(store, query, options);
   }
   const k = options.k ?? DEFAULT_K;
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
   const exclude = new Set(options.excludeSlugs ?? []);
-  const pinned = primerHit(store);
+  const pinned = initialHit(store);
   if (pinned)
-    exclude.add(PRIMER_SLUG);
+    exclude.add(INITIAL_SLUG);
   const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
   const rewrite = skipRewrite ? {
     original: query,
@@ -14356,7 +14453,7 @@ function formatContext(hits, maxChars) {
 }
 
 // src/store/index.ts
-import { mkdirSync, readdirSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync as readFileSync4, renameSync, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 
 // node_modules/yaml/dist/index.js
@@ -14456,6 +14553,24 @@ ${card.body.trim()}
 function slugify(title) {
   const slug = title.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
   return slug || "card";
+}
+// src/cards/primer.ts
+var PRIMER_SLUG = "primer";
+var PRIMER_TITLE = "Schema Primer";
+var PRIMER_USE_WHEN = "Starting any database-analytics question — durable schema, joins, encodings, and db-query constraints";
+function isPrimerProposal(p) {
+  if (typeof p.kind === "string" && p.kind.trim().toLowerCase() === "primer") {
+    return true;
+  }
+  const t = (p.title ?? "").trim().toLowerCase();
+  return t === "primer" || t === "schema primer";
+}
+function normalizePrimerFields(body) {
+  return {
+    title: PRIMER_TITLE,
+    use_when: PRIMER_USE_WHEN,
+    body: body.trim()
+  };
 }
 // src/store/fs.ts
 import { homedir } from "node:os";
@@ -14619,7 +14734,7 @@ class CardStore {
     for (const file of files) {
       const slug = file.replace(/\.md$/, "");
       try {
-        const markdown = readFileSync3(join2(dir, file), "utf8");
+        const markdown = readFileSync4(join2(dir, file), "utf8");
         cards.push(parseCard(markdown, slug));
       } catch {}
     }
@@ -14627,7 +14742,7 @@ class CardStore {
   }
   read(slug) {
     try {
-      const markdown = readFileSync3(join2(cardsDir(this.home), `${slug}.md`), "utf8");
+      const markdown = readFileSync4(join2(cardsDir(this.home), `${slug}.md`), "utf8");
       return parseCard(markdown, slug);
     } catch {
       return null;
@@ -14684,6 +14799,23 @@ class CardStore {
     const iso = now.toISOString();
     return this.persist({
       slug: PRIMER_SLUG,
+      ...fields,
+      created_at: iso,
+      updated_at: iso
+    });
+  }
+  upsertInitial(body, now = new Date) {
+    const fields = {
+      title: INITIAL_TITLE,
+      use_when: INITIAL_USE_WHEN,
+      body: body.trim()
+    };
+    const existing = this.read(INITIAL_SLUG);
+    if (existing)
+      return this.update(INITIAL_SLUG, fields, now);
+    const iso = now.toISOString();
+    return this.persist({
+      slug: INITIAL_SLUG,
       ...fields,
       created_at: iso,
       updated_at: iso
@@ -14750,14 +14882,14 @@ function tokenOverlap(a, b) {
 
 // src/hooks/session-start.ts
 import { execSync } from "node:child_process";
-import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename } from "node:path";
 function loadState(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync3(p))
+    if (!existsSync4(p))
       return {};
-    return JSON.parse(readFileSync4(p, "utf8"));
+    return JSON.parse(readFileSync5(p, "utf8"));
   } catch {
     return {};
   }
@@ -14815,9 +14947,9 @@ function contextOutput(context, hookEventName) {
 function loadState2(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync4(p))
+    if (!existsSync5(p))
       return {};
-    return JSON.parse(readFileSync5(p, "utf8"));
+    return JSON.parse(readFileSync6(p, "utf8"));
   } catch {
     return {};
   }
@@ -14848,17 +14980,17 @@ function handlePromptSubmit(event, home) {
 
 // src/hooks/session-end.ts
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2 } from "node:fs";
+import { copyFileSync, existsSync as existsSync6, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join3 } from "node:path";
 function resolveMutonBin() {
   const entry = process.argv[1];
-  if (entry && existsSync5(entry))
+  if (entry && existsSync6(entry))
     return process.execPath;
   return "muton";
 }
 function resolveReflectArgs(transcriptCopy, cwd, host, sessionId) {
   const entry = process.argv[1];
-  const args = entry && existsSync5(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
+  const args = entry && existsSync6(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
   if (cwd)
     args.push("--cwd", cwd);
   if (host)
@@ -14871,7 +15003,7 @@ function handleSessionEnd(event, home) {
   const store = new CardStore(home);
   try {
     const src = event.transcriptPath;
-    if (!src || !existsSync5(src)) {
+    if (!src || !existsSync6(src)) {
       return { continue: true, suppressOutput: true };
     }
     const destDir = tmpDir(store.home);
@@ -14947,16 +15079,16 @@ async function cmdHook(args) {
 }
 
 // src/hosts/claude.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname, join as join4 } from "node:path";
 function installClaude() {
   const path = join4(homedir2(), ".claude", "settings.json");
   mkdirSync3(dirname(path), { recursive: true });
   let doc = {};
-  if (existsSync6(path)) {
+  if (existsSync7(path)) {
     try {
-      doc = JSON.parse(readFileSync6(path, "utf8"));
+      doc = JSON.parse(readFileSync7(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -14978,7 +15110,7 @@ function installClaude() {
 }
 
 // src/hosts/codex.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join5 } from "node:path";
 function installCodex() {
@@ -14988,9 +15120,9 @@ function installCodex() {
     description: "Codex lifecycle hooks",
     hooks: {}
   };
-  if (existsSync7(path)) {
+  if (existsSync8(path)) {
     try {
-      doc = JSON.parse(readFileSync7(path, "utf8"));
+      doc = JSON.parse(readFileSync8(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -15018,7 +15150,7 @@ function installCodex() {
 }
 
 // src/hosts/cursor.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
+import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync9, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname3, join as join6 } from "node:path";
 function mutonHookCmd(event) {
@@ -15031,9 +15163,9 @@ function installCursor() {
     version: 1,
     hooks: {}
   };
-  if (existsSync8(path)) {
+  if (existsSync9(path)) {
     try {
-      doc = JSON.parse(readFileSync8(path, "utf8"));
+      doc = JSON.parse(readFileSync9(path, "utf8"));
     } catch {}
   }
   doc.version = doc.version ?? 1;
@@ -29793,8 +29925,8 @@ function cmdPropose(args) {
 }
 
 // src/reflection/index.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync10 } from "node:fs";
-import { join as join10 } from "node:path";
+import { appendFileSync, readFileSync as readFileSync11 } from "node:fs";
+import { join as join9 } from "node:path";
 
 // src/reflection/complete/host-cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -29983,217 +30115,25 @@ function createCompleter() {
   };
 }
 
-// src/reflection/gate.ts
-import { appendFileSync } from "node:fs";
-import { join as join8 } from "node:path";
-var DEFAULT_PRIMER_PROMPT = `You maintain ONE Schema Primer card for a database-analytics coding agent that starts a FRESH chat on every question.
-
-The primer is always injected into the next session. It must stay compact and high-value: durable schema, joins, column encodings, db-query tool constraints, and reusable query patterns. It must NOT become a dump of one-off answers.
-
-You are given:
-1. The CURRENT primer (may be empty).
-2. A PROPOSED primer update extracted from the latest session.
-
-Decide exactly one action:
-- merge — the proposal adds durable informational value not already covered. Return the FULL updated primer as card.body (rewrite/union into a concise cheatsheet; dedupe; keep bullets short).
-- discard — the proposal is redundant with the current primer, only a one-off answer key (single race/result with no reusable pattern), speculative, or empty of durable value.
-
-Prefer KEEP / merge for: table relationships, key columns, encodings (e.g. NULL meanings), join paths, DISTINCT/ORDER rules, db query interface limits.
-Prefer DISCARD for: single-question answers, race-specific values without a general rule, duplicate schema already listed, vague advice.
-
-Return ONLY JSON:
-{
-  "action": "merge" | "discard",
-  "reason": "one short sentence",
-  "card": { "title": "Schema Primer", "use_when": "...", "body": "..." }
-}
-
-Rules:
-- discard: card may be null.
-- merge: card.body is the complete primer text to store (not just the delta).
-- Keep the primer under ~1500 tokens of content when possible; drop lower-value lines if needed.`;
-function formatPrimerUserMessage(currentBody, proposal) {
-  return `## Current Schema Primer
-${currentBody?.trim() ? currentBody.trim() : "(empty — no primer yet)"}
-
-## Proposed primer update
-title: ${proposal.title}
-use_when: ${proposal.use_when}
-body:
-${proposal.body}`;
-}
-function parseGateDecision(raw) {
-  const text = raw.trim();
-  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const jsonText = fence?.[1]?.trim() ?? text;
-  const start = jsonText.indexOf("{");
-  const end = jsonText.lastIndexOf("}");
-  if (start < 0 || end < 0 || end <= start)
-    return null;
-  try {
-    const parsed = JSON.parse(jsonText.slice(start, end + 1));
-    const action = parsed.action;
-    if (action !== "create" && action !== "merge" && action !== "discard")
-      return null;
-    const closest = parsed.closest_slug === null || parsed.closest_slug === undefined ? null : typeof parsed.closest_slug === "string" ? parsed.closest_slug.trim() || null : null;
-    const reason = typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "(no reason)";
-    let card = null;
-    const c = parsed.card;
-    if (c && typeof c === "object" && !Array.isArray(c)) {
-      const o = c;
-      if (typeof o.title === "string" && typeof o.use_when === "string" && typeof o.body === "string" && o.title.trim() && o.use_when.trim() && o.body.trim()) {
-        card = {
-          title: o.title.trim(),
-          use_when: o.use_when.trim(),
-          body: o.body.trim()
-        };
-      }
-    }
-    return { action, closest_slug: closest, reason, card };
-  } catch {
-    return null;
-  }
-}
-function logGate(home, event) {
-  try {
-    appendFileSync(join8(logsDir(home), "gate.log"), `${JSON.stringify(event)}
-`);
-  } catch {}
-}
-function normalizeProposal(p) {
-  const title = p.title?.trim();
-  const use_when = p.use_when?.trim();
-  const body = p.body?.trim();
-  if (!title || !use_when || !body)
-    return null;
-  return { title, use_when, body, kind: p.kind };
-}
-async function gatePrimerProposal(complete, store, proposal, opts) {
-  const result = {
-    written: 0,
-    merged: 0,
-    discarded: 0,
-    skipped: 0,
-    events: []
-  };
-  const proposed = normalizeProposal(proposal);
-  if (!proposed) {
-    result.skipped += 1;
-    return result;
-  }
-  const existing = store.read(PRIMER_SLUG);
-  let decision = null;
-  let parseError;
-  try {
-    const raw = await complete({
-      system: DEFAULT_PRIMER_PROMPT,
-      user: formatPrimerUserMessage(existing?.body ?? null, proposed),
-      host: opts?.host,
-      cwd: opts?.cwd ?? join8(store.home, "scratch")
-    });
-    decision = parseGateDecision(raw);
-    if (!decision)
-      parseError = "unparsable-primer-json";
-    else if (decision.action === "create") {
-      decision = { ...decision, action: "merge" };
-    }
-  } catch (err) {
-    parseError = err instanceof Error ? err.message : String(err);
-  }
-  if (!decision) {
-    if (!existing) {
-      const card = store.upsertPrimer(proposed);
-      const event = {
-        ts: new Date().toISOString(),
-        action: "create",
-        proposed,
-        closest_slug: null,
-        reason: "primer parse/error — created from proposal",
-        result_slug: card.slug,
-        error: parseError
-      };
-      result.written += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-    } else {
-      const event = {
-        ts: new Date().toISOString(),
-        action: "discard",
-        proposed,
-        closest_slug: PRIMER_SLUG,
-        reason: "primer parse/error — discarded",
-        result_slug: null,
-        error: parseError
-      };
-      result.discarded += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-    }
-    return result;
-  }
-  if (decision.action === "discard") {
-    const event = {
-      ts: new Date().toISOString(),
-      action: "discard",
-      proposed,
-      closest_slug: existing ? PRIMER_SLUG : null,
-      reason: decision.reason,
-      result_slug: null
-    };
-    result.discarded += 1;
-    result.events.push(event);
-    logGate(store.home, event);
-    return result;
-  }
-  const mergedBody = decision.card?.body?.trim() || (existing ? mergePrimerBodies(existing.body, proposed.body) : proposed.body);
-  const fields = normalizePrimerFields(mergedBody);
-  const card = store.upsertPrimer(fields);
-  const event = {
-    ts: new Date().toISOString(),
-    action: existing ? "merge" : "create",
-    proposed,
-    closest_slug: existing ? PRIMER_SLUG : null,
-    reason: decision.reason,
-    result_slug: card.slug
-  };
-  if (existing)
-    result.merged += 1;
-  else
-    result.written += 1;
-  result.events.push(event);
-  logGate(store.home, event);
-  return result;
-}
-
 // src/reflection/prompt.ts
-import { existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
-import { join as join9 } from "node:path";
-var DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge cards from this session transcript for a shared hive memory (Muton).
+import { existsSync as existsSync10, readFileSync as readFileSync10 } from "node:fs";
+import { join as join8 } from "node:path";
+var DEFAULT_REFLECTION_PROMPT = `You extract 0–5 durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
-  "kind": "general" | "primer",
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
   "body": "the durable fact — concrete and reusable"
 }
 
-Two kinds of items (both in the same array):
-
-1) General cards (kind "general", or omit kind): propose 0–5 durable knowledge cards for the shared hive.
-Rules for general cards:
+Rules:
 - Propose only durable facts that would help another agent later.
 - Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints.
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
 - The store merges near-duplicates. Do not list or reuse existing hive titles. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
-- Prefer fewer high-value cards (0–5). If nothing durable was learned for the hive, omit general cards.
-
-2) Schema Primer (kind "primer"): you MUST include exactly ONE additional item with kind "primer" every turn.
-- Title should be "Schema Primer".
-- Body: concise bullet-style durable schema/join/encoding/db-query-constraint facts learned this session, suitable to merge into a standing cheatsheet.
-- Do NOT put one-off answer keys (a single race winner/time/count) in the primer.
-
-title and use_when are mandatory and non-empty for every item.`;
+- Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
+- title and use_when are mandatory and non-empty. body is the durable fact.`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.home ?? mutonHome();
@@ -30205,10 +30145,10 @@ function loadReflectionPrompt(opts) {
 ${extra}`;
 }
 function readExtraPrompt(cwd, home) {
-  for (const path of [join9(cwd, "REFLECTION.md"), join9(home, "REFLECTION.md")]) {
-    if (!existsSync9(path))
+  for (const path of [join8(cwd, "REFLECTION.md"), join8(home, "REFLECTION.md")]) {
+    if (!existsSync10(path))
       continue;
-    const text = readFileSync9(path, "utf8").trim();
+    const text = readFileSync10(path, "utf8").trim();
     if (text)
       return text;
   }
@@ -30233,8 +30173,8 @@ function writeProposedCards(store, proposals) {
       body,
       kind: proposal.kind
     };
-    if (isPrimerProposal(row)) {
-      skipped.push("primer-without-judge");
+    if (isPrimerProposal(row) || slugify(title) === INITIAL_SLUG || title.toLowerCase() === "initial") {
+      skipped.push(title);
       continue;
     }
     written.push(store.upsert({ title, use_when: useWhen, body }));
@@ -30253,34 +30193,34 @@ function shouldTryResume(opts) {
     return false;
   return hostSupportsResume(opts.host ?? "auto");
 }
-async function commitProposals(complete, store, proposals, opts) {
-  const primers = proposals.filter((p) => isPrimerProposal(p) || p.kind === "primer");
-  const general = proposals.filter((p) => !(isPrimerProposal(p) || p.kind === "primer"));
-  let written = 0;
-  let skipped = 0;
-  let merged = 0;
-  let discarded = 0;
-  for (const p of primers) {
-    const r = await gatePrimerProposal(complete, store, p, {
-      host: opts.host,
-      cwd: opts.cwd ?? join10(store.home, "scratch")
-    });
-    written += r.written;
-    merged += r.merged;
-    discarded += r.discarded;
-    skipped += r.skipped;
-  }
-  const result = writeProposedCards(store, general);
-  written += result.written.length;
-  skipped += result.skipped.length;
-  log(store.home, `commit primer+ungated-hive wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped} general=${result.written.length}`);
-  return { written, skipped, merged, discarded };
+function maybeRecordInitial(store, transcript) {
+  const step = resolveStepNumber();
+  if (!shouldRecordInitial(step) || step == null)
+    return false;
+  const chat = transcriptToChatLog(transcript);
+  if (!chat.trim())
+    return false;
+  const existing = store.read("initial");
+  const body = mergeInitialStepBody(existing?.body, step, chat);
+  store.upsertInitial(body);
+  log(store.home, `initial step=${step} body_chars=${body.length}`);
+  return true;
+}
+async function commitProposals(store, proposals) {
+  const result = writeProposedCards(store, proposals);
+  log(store.home, `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length}`);
+  return {
+    written: result.written.length,
+    skipped: result.skipped.length,
+    merged: 0,
+    discarded: 0
+  };
 }
 async function reflect(opts) {
   const store = new CardStore(opts.home);
   try {
     const system = loadReflectionPrompt({ cwd: opts.cwd, home: store.home });
-    let transcript = readFileSync10(opts.transcriptPath, "utf8");
+    let transcript = readFileSync11(opts.transcriptPath, "utf8");
     if (transcript.length > 120000) {
       transcript = transcript.slice(-120000);
     }
@@ -30288,8 +30228,9 @@ async function reflect(opts) {
       log(store.home, "path=skip wrote=0 skipped=0 empty-transcript");
       return { written: 0, skipped: 0 };
     }
+    const recordedInitial = maybeRecordInitial(store, transcript);
     const complete = opts.completer ?? createCompleter();
-    const scratch = join10(store.home, "scratch");
+    const scratch = join9(store.home, "scratch");
     const resumeCwd = opts.cwd ?? scratch;
     if (shouldTryResume(opts)) {
       try {
@@ -30302,9 +30243,9 @@ async function reflect(opts) {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(complete, store, filterProposals(parsed), opts);
-          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped}` + (result.merged != null ? ` merged=${result.merged}` : "") + (result.discarded != null ? ` discarded=${result.discarded}` : ""));
-          return result;
+          const result = await commitProposals(store, filterProposals(parsed));
+          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped}` + (recordedInitial ? " initial=1" : ""));
+          return { ...result, initial: recordedInitial };
         }
         log(store.home, "path=resume-fail reason=unparsable");
       } catch (err) {
@@ -30322,9 +30263,9 @@ async function reflect(opts) {
       host: opts.host,
       cwd: scratch
     });
-    const result = await commitProposals(complete, store, parseProposals(raw), opts);
-    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped}` + (result.merged != null ? ` merged=${result.merged}` : "") + (result.discarded != null ? ` discarded=${result.discarded}` : ""));
-    return result;
+    const result = await commitProposals(store, parseProposals(raw));
+    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped}` + (recordedInitial ? " initial=1" : ""));
+    return { ...result, initial: recordedInitial };
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
@@ -30352,7 +30293,6 @@ function parseProposals(raw) {
 }
 function filterProposals(parsed) {
   const out = [];
-  let sawPrimer = false;
   for (const p of parsed) {
     if (!p || typeof p !== "object")
       continue;
@@ -30360,38 +30300,20 @@ function filterProposals(parsed) {
     if (typeof o.title !== "string" || typeof o.use_when !== "string" || typeof o.body !== "string") {
       continue;
     }
-    const kindRaw = typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
-    const kind = kindRaw === "primer" || kindRaw === "general" ? kindRaw : undefined;
-    const row = {
+    const title = o.title.trim();
+    if (title.toLowerCase() === "initial")
+      continue;
+    out.push({
       title: o.title,
       use_when: o.use_when,
-      body: o.body,
-      kind
-    };
-    if (isPrimerProposal(row)) {
-      if (sawPrimer)
-        continue;
-      sawPrimer = true;
-      out.push({
-        title: "Schema Primer",
-        use_when: o.use_when,
-        body: o.body,
-        kind: "primer"
-      });
-    } else {
-      out.push({
-        title: o.title,
-        use_when: o.use_when,
-        body: o.body,
-        kind: kind === "general" ? "general" : undefined
-      });
-    }
+      body: o.body
+    });
   }
   return out;
 }
 function log(home, line) {
   try {
-    appendFileSync2(join10(logsDir(home), "reflect.log"), `${new Date().toISOString()} ${line}
+    appendFileSync(join9(logsDir(home), "reflect.log"), `${new Date().toISOString()} ${line}
 `);
   } catch {}
 }
@@ -30417,16 +30339,16 @@ async function cmdReflect(args) {
 }
 
 // src/cli/commands/search.ts
-import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync7 } from "node:fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync7 } from "node:fs";
 import { createHash } from "node:crypto";
-import { join as join11 } from "node:path";
+import { join as join10 } from "node:path";
 function logLine(file, payload) {
   const home = process.env.MUTON_HOME;
   if (!home)
     return;
   try {
     mkdirSync7(home, { recursive: true });
-    appendFileSync3(join11(home, file), `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}
+    appendFileSync2(join10(home, file), `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}
 `);
   } catch {}
 }

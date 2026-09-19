@@ -129,7 +129,6 @@ describe("reflect", () => {
           expect(req.user).toBe(
             "Stripe still returns 200 with an error body; parse the error field.",
           );
-          // No general LLM gate — only the reflect proposal call.
           return JSON.stringify([
             {
               title: "Stripe 200 error body",
@@ -141,68 +140,11 @@ describe("reflect", () => {
       });
       expect(calls).toBe(1);
       expect(result.written).toBe(1);
-      expect(result.merged).toBe(0);
       expect(result.skipped).toBe(0);
       const after = new CardStore(root);
       try {
         expect(after.cardCount()).toBe(1);
         expect(after.read("stripe-rate-limit-returns-200")?.body).toContain("error field");
-      } finally {
-        after.close();
-      }
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("primer is judged; general cards write without a general gate", async () => {
-    const root = mkdtempSync(join(tmpdir(), "muton-reflect-mix-"));
-    const transcript = join(root, "t.txt");
-    writeFileSync(transcript, "Learned races.circuitId joins circuits; also Stripe 200 quirk.");
-    try {
-      let calls = 0;
-      const result = await reflect({
-        transcriptPath: transcript,
-        home: root,
-        completer: async (req) => {
-          calls += 1;
-          if (calls === 1) {
-            expect(req.system).toContain('kind "primer"');
-            return JSON.stringify([
-              {
-                kind: "general",
-                title: "Stripe 200 error body",
-                use_when: "Stripe HTTP",
-                body: "Parse JSON error on 200.",
-              },
-              {
-                kind: "primer",
-                title: "Schema Primer",
-                use_when: "db",
-                body: "- races.circuitId joins circuits",
-              },
-            ]);
-          }
-          // Second call is primer judge only (not general gate).
-          expect(req.system).toContain("Schema Primer");
-          expect(req.user).toContain("## Proposed primer update");
-          return JSON.stringify({
-            action: "merge",
-            reason: "new join fact",
-            card: {
-              title: "Schema Primer",
-              use_when: "db questions",
-              body: "- races.circuitId joins circuits",
-            },
-          });
-        },
-      });
-      expect(calls).toBe(2);
-      expect(result.written).toBe(2);
-      const after = new CardStore(root);
-      try {
-        expect(after.read("primer")?.body).toContain("circuitId");
-        expect(after.cardCount()).toBe(2);
       } finally {
         after.close();
       }

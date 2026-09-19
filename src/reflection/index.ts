@@ -1,11 +1,15 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isPrimerProposal, type ProposalInput } from "../cards/primer.ts";
+import {
+  mergeInitialStepBody,
+  resolveStepNumber,
+  shouldRecordInitial,
+  transcriptToChatLog,
+} from "../cards/initial.ts";
 import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
 import { createCompleter } from "./complete/index.ts";
-import { gatePrimerProposal } from "./gate.ts";
 import { loadReflectionPrompt } from "./prompt.ts";
 import { writeProposedCards } from "./writer.ts";
 
@@ -23,6 +27,7 @@ export type ReflectResult = {
   skipped: number;
   merged?: number;
   discarded?: number;
+  initial?: boolean;
 };
 
 /** Short user text for host session resume. Do not attach the transcript. */
@@ -36,48 +41,38 @@ function shouldTryResume(opts: ReflectOptions): boolean {
   return hostSupportsResume(opts.host ?? "auto");
 }
 
-async function commitProposals(
-  complete: Completer,
-  store: CardStore,
-  proposals: ProposeInput[],
-  opts: ReflectOptions,
-): Promise<ReflectResult> {
-  const primers = proposals.filter(
-    (p) => isPrimerProposal(p) || p.kind === "primer",
-  );
-  const general = proposals.filter(
-    (p) => !(isPrimerProposal(p) || p.kind === "primer"),
-  );
-
-  let written = 0;
-  let skipped = 0;
-  let merged = 0;
-  let discarded = 0;
-
-  // Primer judge: merge vs discard into the single always-pinned primer card.
-  for (const p of primers) {
-    const r = await gatePrimerProposal(complete, store, p, {
-      host: opts.host,
-      cwd: opts.cwd ?? join(store.home, "scratch"),
-    });
-    written += r.written;
-    merged += r.merged;
-    discarded += r.discarded;
-    skipped += r.skipped;
-  }
-
-  // General hive cards: always ungated lexical upsert (no LLM card gate).
-  const result = writeProposedCards(store, general);
-  written += result.written.length;
-  skipped += result.skipped.length;
-  log(
-    store.home,
-    `commit primer+ungated-hive wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped} general=${result.written.length}`,
-  );
-  return { written, skipped, merged, discarded };
+/** Append this step's chat log into the fixed `initial` card when step ≤ window. */
+function maybeRecordInitial(store: CardStore, transcript: string): boolean {
+  const step = resolveStepNumber();
+  if (!shouldRecordInitial(step) || step == null) return false;
+  const chat = transcriptToChatLog(transcript);
+  if (!chat.trim()) return false;
+  const existing = store.read("initial");
+  const body = mergeInitialStepBody(existing?.body, step, chat);
+  store.upsertInitial(body);
+  log(store.home, `initial step=${step} body_chars=${body.length}`);
+  return true;
 }
 
-/** Run silent reflection: transcript → model → Cards (optionally gated). */
+async function commitProposals(
+  store: CardStore,
+  proposals: ProposeInput[],
+): Promise<ReflectResult> {
+  // Stock hive cards: always ungated lexical upsert (no LLM gate, no primer).
+  const result = writeProposedCards(store, proposals);
+  log(
+    store.home,
+    `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length}`,
+  );
+  return {
+    written: result.written.length,
+    skipped: result.skipped.length,
+    merged: 0,
+    discarded: 0,
+  };
+}
+
+/** Run silent reflection: transcript → model → Cards (ungated) + optional initial. */
 export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
   const store = new CardStore(opts.home);
   try {
@@ -90,6 +85,8 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
       log(store.home, "path=skip wrote=0 skipped=0 empty-transcript");
       return { written: 0, skipped: 0 };
     }
+
+    const recordedInitial = maybeRecordInitial(store, transcript);
 
     const complete = opts.completer ?? createCompleter();
     const scratch = join(store.home, "scratch");
@@ -106,19 +103,13 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(
-            complete,
-            store,
-            filterProposals(parsed),
-            opts,
-          );
+          const result = await commitProposals(store, filterProposals(parsed));
           log(
             store.home,
             `path=resume wrote=${result.written} skipped=${result.skipped}` +
-              (result.merged != null ? ` merged=${result.merged}` : "") +
-              (result.discarded != null ? ` discarded=${result.discarded}` : ""),
+              (recordedInitial ? " initial=1" : ""),
           );
-          return result;
+          return { ...result, initial: recordedInitial };
         }
         log(store.home, "path=resume-fail reason=unparsable");
       } catch (err) {
@@ -137,14 +128,13 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
       host: opts.host,
       cwd: scratch,
     });
-    const result = await commitProposals(complete, store, parseProposals(raw), opts);
+    const result = await commitProposals(store, parseProposals(raw));
     log(
       store.home,
       `path=fallback wrote=${result.written} skipped=${result.skipped}` +
-        (result.merged != null ? ` merged=${result.merged}` : "") +
-        (result.discarded != null ? ` discarded=${result.discarded}` : ""),
+        (recordedInitial ? " initial=1" : ""),
     );
-    return result;
+    return { ...result, initial: recordedInitial };
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
@@ -174,7 +164,6 @@ export function parseProposals(raw: string): ProposeInput[] {
 
 function filterProposals(parsed: unknown[]): ProposeInput[] {
   const out: ProposeInput[] = [];
-  let sawPrimer = false;
   for (const p of parsed) {
     if (!p || typeof p !== "object") continue;
     const o = p as Record<string, unknown>;
@@ -185,33 +174,14 @@ function filterProposals(parsed: unknown[]): ProposeInput[] {
     ) {
       continue;
     }
-    const kindRaw =
-      typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
-    const kind =
-      kindRaw === "primer" || kindRaw === "general" ? kindRaw : undefined;
-    const row: ProposalInput = {
+    const title = o.title.trim();
+    // Never let reflect overwrite the reserved initial chat-log card.
+    if (title.toLowerCase() === "initial") continue;
+    out.push({
       title: o.title,
       use_when: o.use_when,
       body: o.body,
-      kind,
-    };
-    if (isPrimerProposal(row)) {
-      if (sawPrimer) continue; // at most one primer proposal per reflect
-      sawPrimer = true;
-      out.push({
-        title: "Schema Primer",
-        use_when: o.use_when,
-        body: o.body,
-        kind: "primer",
-      });
-    } else {
-      out.push({
-        title: o.title,
-        use_when: o.use_when,
-        body: o.body,
-        kind: kind === "general" ? "general" : undefined,
-      });
-    }
+    });
   }
   return out;
 }

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Card } from "../cards/index.ts";
-import { PRIMER_SLUG } from "../cards/primer.ts";
+import { INITIAL_SLUG } from "../cards/initial.ts";
 import type { CardStore } from "../store/index.ts";
 import type { RankedHit } from "./rerank.ts";
 import { rerank } from "./rerank.ts";
@@ -20,7 +20,7 @@ export type SearchOptions = {
 };
 
 export type SearchChannel = {
-  name: "instruction" | "question" | "primer";
+  name: "instruction" | "question" | "initial";
   query_chars: number;
   query_head: string;
   n_hits: number;
@@ -35,7 +35,8 @@ export type SearchResult = {
 };
 
 const DEFAULT_K = 5;
-const DEFAULT_MAX_CHARS = 6000;
+/** Large enough to fit the initial chat-log card plus hybrid hits. */
+const DEFAULT_MAX_CHARS = 100_000;
 const DEFAULT_K_INSTRUCTION = 3;
 const DEFAULT_K_QUESTION = 3;
 
@@ -85,9 +86,9 @@ function rankQuery(
   return ranked.slice(0, k);
 }
 
-/** Pin the single schema primer (if any) as a synthetic top hit. */
-function primerHit(store: CardStore): RankedHit | null {
-  const card = store.read(PRIMER_SLUG);
+/** Pin the initial chat-log card (if any) as a synthetic top hit. */
+function initialHit(store: CardStore): RankedHit | null {
+  const card = store.read(INITIAL_SLUG);
   if (!card) return null;
   return cardToHit(card, Number.POSITIVE_INFINITY);
 }
@@ -106,31 +107,31 @@ function cardToHit(card: Card, score: number): RankedHit {
 }
 
 /**
- * Hybrid k+k: instruction + question channels, plus always-pinned schema primer.
+ * Hybrid k+k: instruction + question channels, plus always-pinned initial card.
  */
 export function searchCardsHybrid(
   store: CardStore,
   instruction: string,
   options: SearchOptions = {},
 ): SearchResult {
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
   const kInst =
     options.kInstruction ??
     envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
   const kQ =
     options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
   const exclude = new Set<string>(options.excludeSlugs ?? []);
-  const pinned = primerHit(store);
-  if (pinned) exclude.add(PRIMER_SLUG);
+  const pinned = initialHit(store);
+  if (pinned) exclude.add(INITIAL_SLUG);
   const channels: SearchChannel[] = [];
 
   if (pinned) {
     channels.push({
-      name: "primer",
+      name: "initial",
       query_chars: 0,
       query_head: "(pinned)",
       n_hits: 1,
-      slugs: [PRIMER_SLUG],
+      slugs: [INITIAL_SLUG],
     });
   }
 
@@ -179,15 +180,15 @@ export function searchCardsHybrid(
     rewrite: {
       original: instruction,
       rewritten: question
-        ? `[hybrid] primer+instruction[${kInst}]+question[${kQ}]`
-        : `[hybrid] primer+instruction[${kInst}] only`,
+        ? `[hybrid] initial+instruction[${kInst}]+question[${kQ}]`
+        : `[hybrid] initial+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt",
     },
     channels,
   };
 }
 
-/** Search Cards with BM25 then rerank; always pin primer when present. */
+/** Search Cards with BM25 then rerank; always pin initial when present. */
 export function searchCards(
   store: CardStore,
   query: string,
@@ -202,10 +203,10 @@ export function searchCards(
   }
 
   const k = options.k ?? DEFAULT_K;
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
   const exclude = new Set<string>(options.excludeSlugs ?? []);
-  const pinned = primerHit(store);
-  if (pinned) exclude.add(PRIMER_SLUG);
+  const pinned = initialHit(store);
+  if (pinned) exclude.add(INITIAL_SLUG);
 
   const skipRewrite =
     options.skipRewrite ||

@@ -1,6 +1,6 @@
 # mutongate
 
-Private Muton fork: **hybrid Card search** (n+m+primer pin) + **stock reflect** (0–5 ungated general + primer judge).
+Private Muton fork: **hybrid Card search** (n+m+initial pin) + **stock reflect** (0–5 ungated) + **initial chat-log card** from the first three steps.
 
 Version: `0.2.1-qr3-cardgate`
 
@@ -29,7 +29,8 @@ echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
 | `MUTON_HYBRID=1` | Dual FTS (instruction + question) |
 | `MUTON_HYBRID_K_INSTRUCTION` | Instruction-channel k (e.g. `3`) |
 | `MUTON_HYBRID_K_QUESTION` | Question-channel k (e.g. `3`) |
-| `MUTON_CARD_GATE` | Legacy; general cards are always ungated. Primer judge always runs. |
+| `MUTON_CARD_GATE` | Legacy; unused on reflect path (always ungated). |
+| `MUTON_INITIAL_STEPS` | Steps that append into slug `initial` (default `3`). |
 | `MUTON_MODEL` / `MUTON_API_KEY` | Model for reflect + gate |
 | `OPENAI_API_KEY` | Passed through to the agent |
 
