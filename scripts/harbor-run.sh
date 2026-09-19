@@ -95,6 +95,7 @@ MOUNTS="$(cat "$MOUNTS_FILE")"
 BENCH="$(find_bench_root "$TASK")"
 STEPS="$(count_steps "$TASK/task.toml")"
 MODEL="${MUTON_MODEL:-gpt-5.6-luna}"
+CARD_GATE="${MUTON_CARD_GATE:-1}"
 
 CMD=(
   harbor run -p "$TASK" -a pi -m "openai/${MODEL}"
@@ -107,7 +108,7 @@ CMD=(
   --ae "MUTON_HYBRID=1"
   --ae "MUTON_HYBRID_K_INSTRUCTION=${K_INST}"
   --ae "MUTON_HYBRID_K_QUESTION=${K_Q}"
-  --ae "MUTON_CARD_GATE=1"
+  --ae "MUTON_CARD_GATE=${CARD_GATE}"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -124,6 +125,7 @@ echo "  task:  ${TASK}"
 echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
+echo "  hybrid: ${K_INST}+${K_Q}  card_gate: ${CARD_GATE}  (cold hive each run)"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'
