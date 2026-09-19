@@ -1,52 +1,53 @@
-```
-  __  __ _    _ _______ ____  _   _ 
- |  \/  | |  | |__   __/ __ \| \ | |
- | \  / | |  | |  | | | |  | |  \| |
- | |\/| | |  | |  | | | |  | | . ` |
- | |  | | |__| |  | | | |__| | |\  |
- |_|  |_|\____/   |_|  \____/|_| \_|
-```
+# mutongate
 
-[![npm](https://img.shields.io/npm/v/mutoncli)](https://www.npmjs.com/package/mutoncli)
-![available harness](https://img.shields.io/badge/available_harness-codex%7Cclaude%7Ccursor%7Cpi-informational)
+Private Muton fork: **hybrid Card search** + **stock reflect** + **LLM card gate** (create / merge / discard).
 
-> A muton is the smallest unit of DNA or a chromosome that can change to cause a mutation.
+Version: `0.2.1-qr3-cardgate`
 
-## Why Muton
+## What's included
 
-Muton is shared hive memory for coding agents. Each session starts empty, so the same API quirk or workaround is found again. Muton stores durable facts as Cards and injects the relevant ones when work starts. At session end it extracts new facts. Cursor, Claude Code, Codex, and Pi share the same hive.
+| Path | Purpose |
+|------|---------|
+| `src/` | Muton CLI source (hybrid FTS, stock reflect, `src/reflection/gate.ts`) |
+| `prompts/REFLECTION.md` | Stock reflection prompt |
+| `harbor/` | Harbor/Pi wiring: `muton-real`, wrapper, Pi extension, mounts |
+| `scripts/run-smoke.sh` | Example Harbor smoke runner |
 
-Inspired by [Mozilla cq](https://github.com/mozilla-ai/cq). Muton has no topics, notebooks, or human approval gates. This is a research preview. Near-duplicate content updates the existing Card slug. Muton does not delete or version Cards.
-
-## Installation
+## Build
 
 ```bash
-bun add -g mutoncli
-# or
-npm install -g mutoncli
+bun install && bun run build
+cp dist/cli.js harbor/bin/muton-real
+echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
 ```
 
-The command is still `muton`.
+## Env (the system)
 
-Install hooks for your harness:
+| Variable | Meaning |
+|----------|---------|
+| `MUTON_HYBRID=1` | Dual FTS (instruction + question) |
+| `MUTON_HYBRID_K_INSTRUCTION` | Instruction-channel k (e.g. `3`) |
+| `MUTON_HYBRID_K_QUESTION` | Question-channel k (e.g. `3`) |
+| `MUTON_CARD_GATE=1` | LLM gate after reflect (default on) |
+| `MUTON_MODEL` / `MUTON_API_KEY` | Model for reflect + gate |
+| `OPENAI_API_KEY` | Passed through to the agent |
+
+Stock reflect = “Prefer concrete state…” (not schemaref / outcome-aware).
+
+## Harbor smoke (needs agent-learning-bench nearby)
 
 ```bash
-muton install --target cursor,claude,codex,pi
+export MUTONGATE_ROOT=/path/to/mutongate
+export OPENAI_API_KEY=…
+# rewrite mounts to your absolute MUTONGATE_ROOT if needed
+./scripts/run-smoke.sh 3 3 /path/to/agent-learning-bench/.alb/smoke/database-analytics-hooks10
 ```
 
-Pass only the hosts you use. Cards are stored in `~/.agents/muton/cards/`.
+## Docs
 
-## How it works
-
-1. At session start and on each prompt, Muton searches Cards and injects matches as hidden context.
-2. At session end, Muton starts a reflection job in the background. The host CLI proposes new Cards. You do not see the proposals.
-
-If hooks are not available, use MCP (`muton mcp`) or the skill and CLI (`muton search`, `muton propose`).
-
-## Develop
-
-Read the [CONTRIBUTING](CONTRIBUTING.md) guidelines before you change the code.
+- [docs/CARDGATE.md](docs/CARDGATE.md) — gate prompt & actions
+- [docs/HYBRID.md](docs/HYBRID.md) — hybrid k
 
 ## License
 
-MIT
+Same as upstream Muton (see `LICENSE`).
