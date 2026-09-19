@@ -1,12 +1,13 @@
 import type { Card } from "../cards/index.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
+import { isTriviaProposal, type ProposalInput } from "../cards/trivia.ts";
 
 export type WriteResult = {
   written: Card[];
   skipped: string[];
 };
 
-/** Upsert proposals; skip only invalid rows. Near-duplicates update in place. */
+/** Upsert proposals; trivia always goes to the single `trivia` slug. */
 export function writeProposedCards(store: CardStore, proposals: ProposeInput[]): WriteResult {
   const written: Card[] = [];
   const skipped: string[] = [];
@@ -19,7 +20,12 @@ export function writeProposedCards(store: CardStore, proposals: ProposeInput[]):
       skipped.push(title || "(invalid)");
       continue;
     }
-    written.push(store.upsert({ title, use_when: useWhen, body }));
+    const row: ProposalInput = { title, use_when: useWhen, body, kind: (proposal as ProposalInput).kind };
+    if (isTriviaProposal(row)) {
+      written.push(store.upsertTrivia(row));
+    } else {
+      written.push(store.upsert({ title, use_when: useWhen, body }));
+    }
   }
   return { written, skipped };
 }

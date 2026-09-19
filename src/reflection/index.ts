@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CardStore, logsDir } from "../store/index.ts";
+import { isTriviaProposal, type ProposalInput } from "../cards/trivia.ts";
+import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
 import { createCompleter } from "./complete/index.ts";
@@ -38,7 +39,7 @@ function shouldTryResume(opts: ReflectOptions): boolean {
 async function commitProposals(
   complete: Completer,
   store: CardStore,
-  proposals: Array<{ title: string; use_when: string; body: string }>,
+  proposals: ProposeInput[],
   opts: ReflectOptions,
 ): Promise<ReflectResult> {
   if (!cardGateEnabled()) {
@@ -152,23 +153,52 @@ export function extractProposalArray(raw: string): unknown[] | null {
   }
 }
 
-export function parseProposals(
-  raw: string,
-): Array<{ title: string; use_when: string; body: string }> {
+export function parseProposals(raw: string): ProposeInput[] {
   return filterProposals(extractProposalArray(raw) ?? []);
 }
 
-function filterProposals(
-  parsed: unknown[],
-): Array<{ title: string; use_when: string; body: string }> {
-  return parsed.filter(
-    (p): p is { title: string; use_when: string; body: string } =>
-      !!p &&
-      typeof p === "object" &&
-      typeof (p as { title: unknown }).title === "string" &&
-      typeof (p as { use_when: unknown }).use_when === "string" &&
-      typeof (p as { body: unknown }).body === "string",
-  );
+function filterProposals(parsed: unknown[]): ProposeInput[] {
+  const out: ProposeInput[] = [];
+  let sawTrivia = false;
+  for (const p of parsed) {
+    if (!p || typeof p !== "object") continue;
+    const o = p as Record<string, unknown>;
+    if (
+      typeof o.title !== "string" ||
+      typeof o.use_when !== "string" ||
+      typeof o.body !== "string"
+    ) {
+      continue;
+    }
+    const kindRaw =
+      typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
+    const kind =
+      kindRaw === "trivia" || kindRaw === "general" ? kindRaw : undefined;
+    const row: ProposalInput = {
+      title: o.title,
+      use_when: o.use_when,
+      body: o.body,
+      kind,
+    };
+    if (isTriviaProposal(row)) {
+      if (sawTrivia) continue; // at most one trivia proposal per reflect
+      sawTrivia = true;
+      out.push({
+        title: "Trivia",
+        use_when: o.use_when,
+        body: o.body,
+        kind: "trivia",
+      });
+    } else {
+      out.push({
+        title: o.title,
+        use_when: o.use_when,
+        body: o.body,
+        kind: kind === "general" ? "general" : undefined,
+      });
+    }
+  }
+  return out;
 }
 
 function log(home: string, line: string): void {

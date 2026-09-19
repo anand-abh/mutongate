@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { Card } from "../cards/index.ts";
+import { TRIVIA_SLUG } from "../cards/trivia.ts";
 import type { CardStore } from "../store/index.ts";
 import type { RankedHit } from "./rerank.ts";
 import { rerank } from "./rerank.ts";
@@ -18,7 +20,7 @@ export type SearchOptions = {
 };
 
 export type SearchChannel = {
-  name: "instruction" | "question";
+  name: "instruction" | "question" | "trivia";
   query_chars: number;
   query_head: string;
   n_hits: number;
@@ -83,8 +85,29 @@ function rankQuery(
   return ranked.slice(0, k);
 }
 
+/** Pin the single trivia card (if any) as a synthetic top hit. */
+function triviaHit(store: CardStore): RankedHit | null {
+  const card = store.read(TRIVIA_SLUG);
+  if (!card) return null;
+  return cardToHit(card, Number.POSITIVE_INFINITY);
+}
+
+function cardToHit(card: Card, score: number): RankedHit {
+  return {
+    slug: card.slug,
+    title: card.title,
+    use_when: card.use_when,
+    body: card.body,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+    bm25: 0,
+    score,
+  };
+}
+
 /**
  * Hybrid k+k: instruction prompt → k_instruction Cards, question.md → k_question.
+ * Always includes the trivia card (if present) in addition to both channels.
  * Defaults 3+3. Override via options or MUTON_HYBRID_K_INSTRUCTION /
  * MUTON_HYBRID_K_QUESTION. No rewrite — question file text as-is.
  */
@@ -99,8 +122,20 @@ export function searchCardsHybrid(
     envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
   const kQ =
     options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
-  const exclude = options.excludeSlugs ?? new Set<string>();
+  const exclude = new Set<string>(options.excludeSlugs ?? []);
+  const pinned = triviaHit(store);
+  if (pinned) exclude.add(TRIVIA_SLUG);
   const channels: SearchChannel[] = [];
+
+  if (pinned) {
+    channels.push({
+      name: "trivia",
+      query_chars: 0,
+      query_head: "(pinned)",
+      n_hits: 1,
+      slugs: [TRIVIA_SLUG],
+    });
+  }
 
   const instHits = rankQuery(
     store,
@@ -139,8 +174,8 @@ export function searchCardsHybrid(
     });
   }
 
-  // Instruction/meta first, then question/task Cards.
-  const hits = [...instHits, ...qHits];
+  // Trivia first (pinned), then instruction/meta, then question/task Cards.
+  const hits = pinned ? [pinned, ...instHits, ...qHits] : [...instHits, ...qHits];
   const context = formatContext(hits, maxChars);
   return {
     hits,
@@ -148,8 +183,8 @@ export function searchCardsHybrid(
     rewrite: {
       original: instruction,
       rewritten: question
-        ? `[hybrid] instruction[${kInst}]+question[${kQ}]`
-        : `[hybrid] instruction[${kInst}] only`,
+        ? `[hybrid] trivia+instruction[${kInst}]+question[${kQ}]`
+        : `[hybrid] trivia+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt",
     },
     channels,
@@ -172,7 +207,9 @@ export function searchCards(
 
   const k = options.k ?? DEFAULT_K;
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const exclude = options.excludeSlugs ?? new Set<string>();
+  const exclude = new Set<string>(options.excludeSlugs ?? []);
+  const pinned = triviaHit(store);
+  if (pinned) exclude.add(TRIVIA_SLUG);
 
   const skipRewrite =
     options.skipRewrite ||
@@ -187,12 +224,14 @@ export function searchCards(
   const effective = rewrite.rewritten;
 
   if (!effective.trim() || store.cardCount() === 0) {
-    return { hits: [], context: "", rewrite };
+    const hits = pinned ? [pinned] : [];
+    return { hits, context: formatContext(hits, maxChars), rewrite };
   }
 
   const ranked = rankQuery(store, effective, k, exclude, options.minScore);
-  const context = formatContext(ranked, maxChars);
-  return { hits: ranked, context, rewrite };
+  const hits = pinned ? [pinned, ...ranked] : ranked;
+  const context = formatContext(hits, maxChars);
+  return { hits, context, rewrite };
 }
 
 export function formatContext(hits: RankedHit[], maxChars: number): string {

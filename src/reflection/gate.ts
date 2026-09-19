@@ -1,6 +1,11 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Card } from "../cards/index.ts";
+import {
+  isTriviaProposal,
+  TRIVIA_SLUG,
+  type ProposalInput,
+} from "../cards/trivia.ts";
 import type { Completer } from "./complete/index.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
 import { logsDir } from "../store/index.ts";
@@ -47,6 +52,7 @@ If the hive is empty or nothing is meaningfully similar, choose create.
 Keep answer keys when the body encodes how to look the value up again. Discard bare answers with no recipe.
 Prefer create over discard when topics diverge (example: closest is a general races↔circuits join, but the proposal is a specific race count or qualifying result).
 Prefer create over merge for circuit-/race-/result-/season-specific facts; reserve merge for true schema/tooling duplicates.
+Do not manage the Trivia card here — trivia proposals are merged automatically outside this prompt.
 
 Return ONLY JSON (no markdown fences, no commentary):
 {
@@ -170,6 +176,31 @@ export async function gateAndWrite(
     const proposed = normalizeProposal(rawProp);
     if (!proposed) {
       result.skipped += 1;
+      continue;
+    }
+
+    // Trivia: always upsert into the single `trivia` slug (no LLM gate).
+    const asProposal: ProposalInput = {
+      ...proposed,
+      kind: (rawProp as ProposalInput).kind,
+    };
+    if (isTriviaProposal(asProposal) || isTriviaProposal(proposed)) {
+      const before = store.read(TRIVIA_SLUG);
+      const card = store.upsertTrivia(proposed);
+      const event: GateEvent = {
+        ts: new Date().toISOString(),
+        action: before ? "merge" : "create",
+        proposed,
+        closest_slug: before ? TRIVIA_SLUG : null,
+        reason: before
+          ? "trivia — merged into single trivia card"
+          : "trivia — created single trivia card",
+        result_slug: card.slug,
+      };
+      if (before) result.merged += 1;
+      else result.written += 1;
+      result.events.push(event);
+      logGate(store.home, event);
       continue;
     }
 

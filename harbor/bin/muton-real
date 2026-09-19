@@ -13911,6 +13911,39 @@ import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync
 // src/search/index.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
+// src/cards/trivia.ts
+var TRIVIA_SLUG = "trivia";
+var TRIVIA_TITLE = "Trivia";
+var TRIVIA_USE_WHEN = "Non-general session facts (specific answers, raceIds, one-off lookups) that may help later steps";
+function isTriviaProposal(p) {
+  if (typeof p.kind === "string" && p.kind.trim().toLowerCase() === "trivia") {
+    return true;
+  }
+  return (p.title ?? "").trim().toLowerCase() === "trivia";
+}
+function normalizeTriviaFields(body) {
+  return {
+    title: TRIVIA_TITLE,
+    use_when: TRIVIA_USE_WHEN,
+    body: body.trim()
+  };
+}
+function mergeTriviaBodies(existing, incoming) {
+  const a = existing.trim();
+  const b = incoming.trim();
+  if (!b)
+    return a;
+  if (!a)
+    return b;
+  if (a.includes(b))
+    return a;
+  return `${a}
+
+---
+
+${b}`;
+}
+
 // src/search/bm25.ts
 var STOPWORDS = new Set([
   "a",
@@ -14198,12 +14231,42 @@ function rankQuery(store, query, k, exclude, minScore) {
   }
   return ranked.slice(0, k);
 }
+function triviaHit(store) {
+  const card = store.read(TRIVIA_SLUG);
+  if (!card)
+    return null;
+  return cardToHit(card, Number.POSITIVE_INFINITY);
+}
+function cardToHit(card, score) {
+  return {
+    slug: card.slug,
+    title: card.title,
+    use_when: card.use_when,
+    body: card.body,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+    bm25: 0,
+    score
+  };
+}
 function searchCardsHybrid(store, instruction, options = {}) {
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const kInst = options.kInstruction ?? envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
   const kQ = options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
-  const exclude = options.excludeSlugs ?? new Set;
+  const exclude = new Set(options.excludeSlugs ?? []);
+  const pinned = triviaHit(store);
+  if (pinned)
+    exclude.add(TRIVIA_SLUG);
   const channels = [];
+  if (pinned) {
+    channels.push({
+      name: "trivia",
+      query_chars: 0,
+      query_head: "(pinned)",
+      n_hits: 1,
+      slugs: [TRIVIA_SLUG]
+    });
+  }
   const instHits = rankQuery(store, instruction, kInst, exclude, options.minScore);
   channels.push({
     name: "instruction",
@@ -14233,14 +14296,14 @@ function searchCardsHybrid(store, instruction, options = {}) {
       slugs: []
     });
   }
-  const hits = [...instHits, ...qHits];
+  const hits = pinned ? [pinned, ...instHits, ...qHits] : [...instHits, ...qHits];
   const context = formatContext(hits, maxChars);
   return {
     hits,
     context,
     rewrite: {
       original: instruction,
-      rewritten: question ? `[hybrid] instruction[${kInst}]+question[${kQ}]` : `[hybrid] instruction[${kInst}] only`,
+      rewritten: question ? `[hybrid] trivia+instruction[${kInst}]+question[${kQ}]` : `[hybrid] trivia+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt"
     },
     channels
@@ -14253,7 +14316,10 @@ function searchCards(store, query, options = {}) {
   }
   const k = options.k ?? DEFAULT_K;
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const exclude = options.excludeSlugs ?? new Set;
+  const exclude = new Set(options.excludeSlugs ?? []);
+  const pinned = triviaHit(store);
+  if (pinned)
+    exclude.add(TRIVIA_SLUG);
   const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
   const rewrite = skipRewrite ? {
     original: query,
@@ -14262,11 +14328,13 @@ function searchCards(store, query, options = {}) {
   } : rewriteSearchQuery(query);
   const effective = rewrite.rewritten;
   if (!effective.trim() || store.cardCount() === 0) {
-    return { hits: [], context: "", rewrite };
+    const hits = pinned ? [pinned] : [];
+    return { hits, context: formatContext(hits, maxChars), rewrite };
   }
   const ranked = rankQuery(store, effective, k, exclude, options.minScore);
-  const context = formatContext(ranked, maxChars);
-  return { hits: ranked, context, rewrite };
+  const hits = pinned ? [pinned, ...ranked] : ranked;
+  const context = formatContext(hits, maxChars);
+  return { hits, context, rewrite };
 }
 function formatContext(hits, maxChars) {
   if (hits.length === 0)
@@ -14604,6 +14672,21 @@ class CardStore {
       title: input.title.trim(),
       use_when: input.use_when.trim(),
       body: input.body.trim(),
+      created_at: iso,
+      updated_at: iso
+    });
+  }
+  upsertTrivia(input, now = new Date) {
+    const incoming = input.body.trim();
+    const existing = this.read(TRIVIA_SLUG);
+    const body = existing ? mergeTriviaBodies(existing.body, incoming) : incoming;
+    const fields = normalizeTriviaFields(body);
+    if (existing)
+      return this.update(TRIVIA_SLUG, fields, now);
+    const iso = now.toISOString();
+    return this.persist({
+      slug: TRIVIA_SLUG,
+      ...fields,
       created_at: iso,
       updated_at: iso
     });
@@ -29919,6 +30002,7 @@ If the hive is empty or nothing is meaningfully similar, choose create.
 Keep answer keys when the body encodes how to look the value up again. Discard bare answers with no recipe.
 Prefer create over discard when topics diverge (example: closest is a general races\u2194circuits join, but the proposal is a specific race count or qualifying result).
 Prefer create over merge for circuit-/race-/result-/season-specific facts; reserve merge for true schema/tooling duplicates.
+Do not manage the Trivia card here \u2014 trivia proposals are merged automatically outside this prompt.
 
 Return ONLY JSON (no markdown fences, no commentary):
 {
@@ -30013,6 +30097,29 @@ async function gateAndWrite(complete, store, proposals, opts) {
     const proposed = normalizeProposal(rawProp);
     if (!proposed) {
       result.skipped += 1;
+      continue;
+    }
+    const asProposal = {
+      ...proposed,
+      kind: rawProp.kind
+    };
+    if (isTriviaProposal(asProposal) || isTriviaProposal(proposed)) {
+      const before = store.read(TRIVIA_SLUG);
+      const card = store.upsertTrivia(proposed);
+      const event = {
+        ts: new Date().toISOString(),
+        action: before ? "merge" : "create",
+        proposed,
+        closest_slug: before ? TRIVIA_SLUG : null,
+        reason: before ? "trivia \u2014 merged into single trivia card" : "trivia \u2014 created single trivia card",
+        result_slug: card.slug
+      };
+      if (before)
+        result.merged += 1;
+      else
+        result.written += 1;
+      result.events.push(event);
+      logGate(store.home, event);
       continue;
     }
     const hive = store.listCards();
@@ -30134,22 +30241,27 @@ async function gateAndWrite(complete, store, proposals, opts) {
 // src/reflection/prompt.ts
 import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
 import { join as join9 } from "path";
-var DEFAULT_REFLECTION_PROMPT = `You extract 0\u20135 durable knowledge cards from this session transcript for a shared hive memory (Muton).
+var DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
+  "kind": "general" | "trivia",
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
   "body": "the durable fact \u2014 concrete and reusable"
 }
 
+Card kinds:
+- general (default): reusable schema/join/tooling/encoding patterns. Prefer these for durable how-to knowledge. You may propose 0\u20135 general cards.
+- trivia: at most ONE item with kind "trivia". Put non-general, session-specific facts here (concrete answers, raceIds, one-off lookups, verified values) that might help later steps. Title should be "Trivia". The hive keeps a single trivia card; new trivia is merged into it.
+
 Rules:
-- Propose only durable facts that would help another agent later.
-- Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints.
+- Propose only facts supported by the transcript.
+- Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints, verified lookups.
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
-- The store merges near-duplicates. Do not list or reuse existing hive titles. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
-- Prefer fewer high-value cards (0\u20135). Return [] if nothing durable was learned.
-- title and use_when are mandatory and non-empty. body is the durable fact.`;
+- The store merges near-duplicates. Do not list or reuse existing hive titles (except Trivia). Do NOT delete cards. Do NOT invent facts.
+- Prefer fewer high-value general cards (0\u20135) plus optional 0\u20131 trivia. Return [] if nothing useful was learned.
+- title and use_when are mandatory and non-empty. body is the fact. kind may be omitted (treated as general).`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.home ?? mutonHome();
@@ -30183,7 +30295,12 @@ function writeProposedCards(store, proposals) {
       skipped.push(title || "(invalid)");
       continue;
     }
-    written.push(store.upsert({ title, use_when: useWhen, body }));
+    const row = { title, use_when: useWhen, body, kind: proposal.kind };
+    if (isTriviaProposal(row)) {
+      written.push(store.upsertTrivia(row));
+    } else {
+      written.push(store.upsert({ title, use_when: useWhen, body }));
+    }
   }
   return { written, skipped };
 }
@@ -30291,7 +30408,43 @@ function parseProposals(raw) {
   return filterProposals(extractProposalArray(raw) ?? []);
 }
 function filterProposals(parsed) {
-  return parsed.filter((p) => !!p && typeof p === "object" && typeof p.title === "string" && typeof p.use_when === "string" && typeof p.body === "string");
+  const out = [];
+  let sawTrivia = false;
+  for (const p of parsed) {
+    if (!p || typeof p !== "object")
+      continue;
+    const o = p;
+    if (typeof o.title !== "string" || typeof o.use_when !== "string" || typeof o.body !== "string") {
+      continue;
+    }
+    const kindRaw = typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
+    const kind = kindRaw === "trivia" || kindRaw === "general" ? kindRaw : undefined;
+    const row = {
+      title: o.title,
+      use_when: o.use_when,
+      body: o.body,
+      kind
+    };
+    if (isTriviaProposal(row)) {
+      if (sawTrivia)
+        continue;
+      sawTrivia = true;
+      out.push({
+        title: "Trivia",
+        use_when: o.use_when,
+        body: o.body,
+        kind: "trivia"
+      });
+    } else {
+      out.push({
+        title: o.title,
+        use_when: o.use_when,
+        body: o.body,
+        kind: kind === "general" ? "general" : undefined
+      });
+    }
+  }
+  return out;
 }
 function log(home, line) {
   try {

@@ -1,9 +1,16 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Card, parseCard, serializeCard, slugify } from "../cards/index.ts";
+import {
+  type Card,
+  mergeTriviaBodies,
+  normalizeTriviaFields,
+  parseCard,
+  serializeCard,
+  slugify,
+  TRIVIA_SLUG,
+} from "../cards/index.ts";
 import { cardsDir, indexPath, logsDir, mutonHome, scratchDir, tmpDir } from "./fs.ts";
 import { CardIndex, type FtsHit } from "./sqlite.ts";
-
 const MERGE_SEARCH_K = 5;
 const TITLE_OVERLAP = 0.8;
 const CONTENT_OVERLAP = 0.5;
@@ -13,6 +20,8 @@ export type ProposeInput = {
   title: string;
   use_when: string;
   body: string;
+  /** Optional; `trivia` forces the single trivia-card path. */
+  kind?: "trivia" | "general";
 };
 
 export class CardStore {
@@ -126,6 +135,27 @@ export class CardStore {
       title: input.title.trim(),
       use_when: input.use_when.trim(),
       body: input.body.trim(),
+      created_at: iso,
+      updated_at: iso,
+    });
+  }
+
+  /**
+   * Ensure a single trivia card at slug `trivia`.
+   * New facts are appended to the existing body (never a second trivia file).
+   */
+  upsertTrivia(input: ProposeInput, now = new Date()): Card {
+    const incoming = input.body.trim();
+    const existing = this.read(TRIVIA_SLUG);
+    const body = existing
+      ? mergeTriviaBodies(existing.body, incoming)
+      : incoming;
+    const fields = normalizeTriviaFields(body);
+    if (existing) return this.update(TRIVIA_SLUG, fields, now);
+    const iso = now.toISOString();
+    return this.persist({
+      slug: TRIVIA_SLUG,
+      ...fields,
       created_at: iso,
       updated_at: iso,
     });
