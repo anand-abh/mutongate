@@ -1,6 +1,6 @@
 # Hybrid search
 
-`MUTON_HYBRID=1` runs two FTS queries and merges hits (and always pins the single `trivia` card when present):
+`MUTON_HYBRID=1` runs two FTS queries and merges hits (and always pins the single `primer` Schema Primer card when present):
 
 1. **Instruction channel** — task instruction text · k = `MUTON_HYBRID_K_INSTRUCTION`
 2. **Question channel** — current `question.md` · k = `MUTON_HYBRID_K_QUESTION`

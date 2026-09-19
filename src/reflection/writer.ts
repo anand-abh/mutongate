@@ -1,13 +1,16 @@
 import type { Card } from "../cards/index.ts";
+import { isPrimerProposal, type ProposalInput } from "../cards/primer.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
-import { isTriviaProposal, type ProposalInput } from "../cards/trivia.ts";
 
 export type WriteResult = {
   written: Card[];
   skipped: string[];
 };
 
-/** Upsert proposals; trivia always goes to the single `trivia` slug. */
+/**
+ * Upsert general proposals. Primer proposals are skipped here — they must go
+ * through gatePrimerProposal (LLM decide merge vs discard).
+ */
 export function writeProposedCards(store: CardStore, proposals: ProposeInput[]): WriteResult {
   const written: Card[] = [];
   const skipped: string[] = [];
@@ -20,12 +23,18 @@ export function writeProposedCards(store: CardStore, proposals: ProposeInput[]):
       skipped.push(title || "(invalid)");
       continue;
     }
-    const row: ProposalInput = { title, use_when: useWhen, body, kind: (proposal as ProposalInput).kind };
-    if (isTriviaProposal(row)) {
-      written.push(store.upsertTrivia(row));
-    } else {
-      written.push(store.upsert({ title, use_when: useWhen, body }));
+    const row: ProposalInput = {
+      title,
+      use_when: useWhen,
+      body,
+      kind: (proposal as ProposalInput).kind,
+    };
+    if (isPrimerProposal(row)) {
+      // Caller should have routed primer through gatePrimerProposal.
+      skipped.push("primer-without-judge");
+      continue;
     }
+    written.push(store.upsert({ title, use_when: useWhen, body }));
   }
   return { written, skipped };
 }

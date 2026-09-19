@@ -2,12 +2,11 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import {
   type Card,
-  mergeTriviaBodies,
-  normalizeTriviaFields,
+  normalizePrimerFields,
   parseCard,
+  PRIMER_SLUG,
   serializeCard,
   slugify,
-  TRIVIA_SLUG,
 } from "../cards/index.ts";
 import { cardsDir, indexPath, logsDir, mutonHome, scratchDir, tmpDir } from "./fs.ts";
 import { CardIndex, type FtsHit } from "./sqlite.ts";
@@ -20,8 +19,8 @@ export type ProposeInput = {
   title: string;
   use_when: string;
   body: string;
-  /** Optional; `trivia` forces the single trivia-card path. */
-  kind?: "trivia" | "general";
+  /** Optional; `primer` selects the single schema-primer path. */
+  kind?: "primer" | "general";
 };
 
 export class CardStore {
@@ -141,20 +140,16 @@ export class CardStore {
   }
 
   /**
-   * Ensure a single trivia card at slug `trivia`.
-   * New facts are appended to the existing body (never a second trivia file).
+   * Write/replace the single schema primer at slug `primer`.
+   * `input.body` should be the full primer text after a merge decision.
    */
-  upsertTrivia(input: ProposeInput, now = new Date()): Card {
-    const incoming = input.body.trim();
-    const existing = this.read(TRIVIA_SLUG);
-    const body = existing
-      ? mergeTriviaBodies(existing.body, incoming)
-      : incoming;
-    const fields = normalizeTriviaFields(body);
-    if (existing) return this.update(TRIVIA_SLUG, fields, now);
+  upsertPrimer(input: ProposeInput, now = new Date()): Card {
+    const fields = normalizePrimerFields(input.body);
+    const existing = this.read(PRIMER_SLUG);
+    if (existing) return this.update(PRIMER_SLUG, fields, now);
     const iso = now.toISOString();
     return this.persist({
-      slug: TRIVIA_SLUG,
+      slug: PRIMER_SLUG,
       ...fields,
       created_at: iso,
       updated_at: iso,

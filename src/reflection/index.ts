@@ -1,11 +1,11 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isTriviaProposal, type ProposalInput } from "../cards/trivia.ts";
+import { isPrimerProposal, type ProposalInput } from "../cards/primer.ts";
 import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
 import { createCompleter } from "./complete/index.ts";
-import { cardGateEnabled, gateAndWrite } from "./gate.ts";
+import { cardGateEnabled, gateAndWrite, gatePrimerProposal } from "./gate.ts";
 import { loadReflectionPrompt } from "./prompt.ts";
 import { writeProposedCards } from "./writer.ts";
 
@@ -42,24 +42,54 @@ async function commitProposals(
   proposals: ProposeInput[],
   opts: ReflectOptions,
 ): Promise<ReflectResult> {
-  if (!cardGateEnabled()) {
-    const result = writeProposedCards(store, proposals);
-    return { written: result.written.length, skipped: result.skipped.length };
+  const primers = proposals.filter(
+    (p) => isPrimerProposal(p) || p.kind === "primer",
+  );
+  const general = proposals.filter(
+    (p) => !(isPrimerProposal(p) || p.kind === "primer"),
+  );
+
+  let written = 0;
+  let skipped = 0;
+  let merged = 0;
+  let discarded = 0;
+
+  // Primer judge always runs (merge vs discard into the single primer card).
+  for (const p of primers) {
+    const r = await gatePrimerProposal(complete, store, p, {
+      host: opts.host,
+      cwd: opts.cwd ?? join(store.home, "scratch"),
+    });
+    written += r.written;
+    merged += r.merged;
+    discarded += r.discarded;
+    skipped += r.skipped;
   }
-  const gated = await gateAndWrite(complete, store, proposals, {
+
+  if (!cardGateEnabled()) {
+    const result = writeProposedCards(store, general);
+    written += result.written.length;
+    skipped += result.skipped.length;
+    log(
+      store.home,
+      `commit primer+ungated wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped}`,
+    );
+    return { written, skipped, merged, discarded };
+  }
+
+  const gated = await gateAndWrite(complete, store, general, {
     host: opts.host,
     cwd: opts.cwd ?? join(store.home, "scratch"),
   });
+  written += gated.written;
+  merged += gated.merged;
+  discarded += gated.discarded;
+  skipped += gated.skipped;
   log(
     store.home,
     `gate wrote=${gated.written} merged=${gated.merged} discarded=${gated.discarded} skipped=${gated.skipped}`,
   );
-  return {
-    written: gated.written,
-    skipped: gated.skipped,
-    merged: gated.merged,
-    discarded: gated.discarded,
-  };
+  return { written, skipped, merged, discarded };
 }
 
 /** Run silent reflection: transcript → model → Cards (optionally gated). */
@@ -159,7 +189,7 @@ export function parseProposals(raw: string): ProposeInput[] {
 
 function filterProposals(parsed: unknown[]): ProposeInput[] {
   const out: ProposeInput[] = [];
-  let sawTrivia = false;
+  let sawPrimer = false;
   for (const p of parsed) {
     if (!p || typeof p !== "object") continue;
     const o = p as Record<string, unknown>;
@@ -173,21 +203,21 @@ function filterProposals(parsed: unknown[]): ProposeInput[] {
     const kindRaw =
       typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
     const kind =
-      kindRaw === "trivia" || kindRaw === "general" ? kindRaw : undefined;
+      kindRaw === "primer" || kindRaw === "general" ? kindRaw : undefined;
     const row: ProposalInput = {
       title: o.title,
       use_when: o.use_when,
       body: o.body,
       kind,
     };
-    if (isTriviaProposal(row)) {
-      if (sawTrivia) continue; // at most one trivia proposal per reflect
-      sawTrivia = true;
+    if (isPrimerProposal(row)) {
+      if (sawPrimer) continue; // at most one primer proposal per reflect
+      sawPrimer = true;
       out.push({
-        title: "Trivia",
+        title: "Schema Primer",
         use_when: o.use_when,
         body: o.body,
-        kind: "trivia",
+        kind: "primer",
       });
     } else {
       out.push({
@@ -215,8 +245,11 @@ export { loadReflectionPrompt } from "./prompt.ts";
 export { writeProposedCards } from "./writer.ts";
 export {
   DEFAULT_GATE_PROMPT,
+  DEFAULT_PRIMER_PROMPT,
   cardGateEnabled,
   gateAndWrite,
+  gatePrimerProposal,
   parseGateDecision,
   formatGateUserMessage,
+  formatPrimerUserMessage,
 } from "./gate.ts";

@@ -13911,24 +13911,25 @@ import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync
 // src/search/index.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 
-// src/cards/trivia.ts
-var TRIVIA_SLUG = "trivia";
-var TRIVIA_TITLE = "Trivia";
-var TRIVIA_USE_WHEN = "Non-general session facts (specific answers, raceIds, one-off lookups) that may help later steps";
-function isTriviaProposal(p) {
-  if (typeof p.kind === "string" && p.kind.trim().toLowerCase() === "trivia") {
+// src/cards/primer.ts
+var PRIMER_SLUG = "primer";
+var PRIMER_TITLE = "Schema Primer";
+var PRIMER_USE_WHEN = "Starting any database-analytics question \u2014 durable schema, joins, encodings, and db-query constraints";
+function isPrimerProposal(p) {
+  if (typeof p.kind === "string" && p.kind.trim().toLowerCase() === "primer") {
     return true;
   }
-  return (p.title ?? "").trim().toLowerCase() === "trivia";
+  const t = (p.title ?? "").trim().toLowerCase();
+  return t === "primer" || t === "schema primer";
 }
-function normalizeTriviaFields(body) {
+function normalizePrimerFields(body) {
   return {
-    title: TRIVIA_TITLE,
-    use_when: TRIVIA_USE_WHEN,
+    title: PRIMER_TITLE,
+    use_when: PRIMER_USE_WHEN,
     body: body.trim()
   };
 }
-function mergeTriviaBodies(existing, incoming) {
+function mergePrimerBodies(existing, incoming) {
   const a = existing.trim();
   const b = incoming.trim();
   if (!b)
@@ -13938,8 +13939,6 @@ function mergeTriviaBodies(existing, incoming) {
   if (a.includes(b))
     return a;
   return `${a}
-
----
 
 ${b}`;
 }
@@ -14231,8 +14230,8 @@ function rankQuery(store, query, k, exclude, minScore) {
   }
   return ranked.slice(0, k);
 }
-function triviaHit(store) {
-  const card = store.read(TRIVIA_SLUG);
+function primerHit(store) {
+  const card = store.read(PRIMER_SLUG);
   if (!card)
     return null;
   return cardToHit(card, Number.POSITIVE_INFINITY);
@@ -14254,17 +14253,17 @@ function searchCardsHybrid(store, instruction, options = {}) {
   const kInst = options.kInstruction ?? envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
   const kQ = options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
   const exclude = new Set(options.excludeSlugs ?? []);
-  const pinned = triviaHit(store);
+  const pinned = primerHit(store);
   if (pinned)
-    exclude.add(TRIVIA_SLUG);
+    exclude.add(PRIMER_SLUG);
   const channels = [];
   if (pinned) {
     channels.push({
-      name: "trivia",
+      name: "primer",
       query_chars: 0,
       query_head: "(pinned)",
       n_hits: 1,
-      slugs: [TRIVIA_SLUG]
+      slugs: [PRIMER_SLUG]
     });
   }
   const instHits = rankQuery(store, instruction, kInst, exclude, options.minScore);
@@ -14303,7 +14302,7 @@ function searchCardsHybrid(store, instruction, options = {}) {
     context,
     rewrite: {
       original: instruction,
-      rewritten: question ? `[hybrid] trivia+instruction[${kInst}]+question[${kQ}]` : `[hybrid] trivia+instruction[${kInst}] only`,
+      rewritten: question ? `[hybrid] primer+instruction[${kInst}]+question[${kQ}]` : `[hybrid] primer+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt"
     },
     channels
@@ -14317,9 +14316,9 @@ function searchCards(store, query, options = {}) {
   const k = options.k ?? DEFAULT_K;
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const exclude = new Set(options.excludeSlugs ?? []);
-  const pinned = triviaHit(store);
+  const pinned = primerHit(store);
   if (pinned)
-    exclude.add(TRIVIA_SLUG);
+    exclude.add(PRIMER_SLUG);
   const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
   const rewrite = skipRewrite ? {
     original: query,
@@ -14676,16 +14675,14 @@ class CardStore {
       updated_at: iso
     });
   }
-  upsertTrivia(input, now = new Date) {
-    const incoming = input.body.trim();
-    const existing = this.read(TRIVIA_SLUG);
-    const body = existing ? mergeTriviaBodies(existing.body, incoming) : incoming;
-    const fields = normalizeTriviaFields(body);
+  upsertPrimer(input, now = new Date) {
+    const fields = normalizePrimerFields(input.body);
+    const existing = this.read(PRIMER_SLUG);
     if (existing)
-      return this.update(TRIVIA_SLUG, fields, now);
+      return this.update(PRIMER_SLUG, fields, now);
     const iso = now.toISOString();
     return this.persist({
-      slug: TRIVIA_SLUG,
+      slug: PRIMER_SLUG,
       ...fields,
       created_at: iso,
       updated_at: iso
@@ -30000,9 +29997,9 @@ You are given ONE proposed card and the FULL current hive catalog. Your job:
 If the hive is empty or nothing is meaningfully similar, choose create.
 
 Keep answer keys when the body encodes how to look the value up again. Discard bare answers with no recipe.
-Prefer create over discard when topics diverge (example: closest is a general races\u2194circuits join, but the proposal is a specific race count or qualifying result).
+Prefer create over discard when topics diverge.
 Prefer create over merge for circuit-/race-/result-/season-specific facts; reserve merge for true schema/tooling duplicates.
-Do not manage the Trivia card here \u2014 trivia proposals are merged automatically outside this prompt.
+Do not manage the Schema Primer card here \u2014 primer updates are decided by a separate primer judge.
 
 Return ONLY JSON (no markdown fences, no commentary):
 {
@@ -30016,6 +30013,32 @@ Rules for the JSON:
 - discard: card may be null.
 - create: card is the (optionally cleaned) proposal; set closest_slug if you considered one.
 - merge: closest_slug is REQUIRED and must be an existing slug; card is the full replacement fields for that slug (union of old + new durable facts).`;
+var DEFAULT_PRIMER_PROMPT = `You maintain ONE Schema Primer card for a database-analytics coding agent that starts a FRESH chat on every question.
+
+The primer is always injected into the next session. It must stay compact and high-value: durable schema, joins, column encodings, db-query tool constraints, and reusable query patterns. It must NOT become a dump of one-off answers.
+
+You are given:
+1. The CURRENT primer (may be empty).
+2. A PROPOSED primer update extracted from the latest session.
+
+Decide exactly one action:
+- merge \u2014 the proposal adds durable informational value not already covered. Return the FULL updated primer as card.body (rewrite/union into a concise cheatsheet; dedupe; keep bullets short).
+- discard \u2014 the proposal is redundant with the current primer, only a one-off answer key (single race/result with no reusable pattern), speculative, or empty of durable value.
+
+Prefer KEEP / merge for: table relationships, key columns, encodings (e.g. NULL meanings), join paths, DISTINCT/ORDER rules, db query interface limits.
+Prefer DISCARD for: single-question answers, race-specific values without a general rule, duplicate schema already listed, vague advice.
+
+Return ONLY JSON:
+{
+  "action": "merge" | "discard",
+  "reason": "one short sentence",
+  "card": { "title": "Schema Primer", "use_when": "...", "body": "..." }
+}
+
+Rules:
+- discard: card may be null.
+- merge: card.body is the complete primer text to store (not just the delta).
+- Keep the primer under ~1500 tokens of content when possible; drop lower-value lines if needed.`;
 function cardGateEnabled() {
   const v = (process.env.MUTON_CARD_GATE ?? "1").trim().toLowerCase();
   return !(v === "0" || v === "false" || v === "off" || v === "no");
@@ -30038,6 +30061,16 @@ body: ${proposal.body}
 
 ## Hive catalog (${cards.length} cards)
 ${formatHiveCatalog(cards)}`;
+}
+function formatPrimerUserMessage(currentBody, proposal) {
+  return `## Current Schema Primer
+${currentBody?.trim() ? currentBody.trim() : "(empty \u2014 no primer yet)"}
+
+## Proposed primer update
+title: ${proposal.title}
+use_when: ${proposal.use_when}
+body:
+${proposal.body}`;
 }
 function parseGateDecision(raw) {
   const text = raw.trim();
@@ -30083,7 +30116,103 @@ function normalizeProposal(p) {
   const body = p.body?.trim();
   if (!title || !use_when || !body)
     return null;
-  return { title, use_when, body };
+  return { title, use_when, body, kind: p.kind };
+}
+async function gatePrimerProposal(complete, store, proposal, opts) {
+  const result = {
+    written: 0,
+    merged: 0,
+    discarded: 0,
+    skipped: 0,
+    events: []
+  };
+  const proposed = normalizeProposal(proposal);
+  if (!proposed) {
+    result.skipped += 1;
+    return result;
+  }
+  const existing = store.read(PRIMER_SLUG);
+  let decision = null;
+  let parseError;
+  try {
+    const raw = await complete({
+      system: DEFAULT_PRIMER_PROMPT,
+      user: formatPrimerUserMessage(existing?.body ?? null, proposed),
+      host: opts?.host,
+      cwd: opts?.cwd ?? join8(store.home, "scratch")
+    });
+    decision = parseGateDecision(raw);
+    if (!decision)
+      parseError = "unparsable-primer-json";
+    else if (decision.action === "create") {
+      decision = { ...decision, action: "merge" };
+    }
+  } catch (err) {
+    parseError = err instanceof Error ? err.message : String(err);
+  }
+  if (!decision) {
+    if (!existing) {
+      const card = store.upsertPrimer(proposed);
+      const event = {
+        ts: new Date().toISOString(),
+        action: "create",
+        proposed,
+        closest_slug: null,
+        reason: "primer parse/error \u2014 created from proposal",
+        result_slug: card.slug,
+        error: parseError
+      };
+      result.written += 1;
+      result.events.push(event);
+      logGate(store.home, event);
+    } else {
+      const event = {
+        ts: new Date().toISOString(),
+        action: "discard",
+        proposed,
+        closest_slug: PRIMER_SLUG,
+        reason: "primer parse/error \u2014 discarded",
+        result_slug: null,
+        error: parseError
+      };
+      result.discarded += 1;
+      result.events.push(event);
+      logGate(store.home, event);
+    }
+    return result;
+  }
+  if (decision.action === "discard") {
+    const event = {
+      ts: new Date().toISOString(),
+      action: "discard",
+      proposed,
+      closest_slug: existing ? PRIMER_SLUG : null,
+      reason: decision.reason,
+      result_slug: null
+    };
+    result.discarded += 1;
+    result.events.push(event);
+    logGate(store.home, event);
+    return result;
+  }
+  const mergedBody = decision.card?.body?.trim() || (existing ? mergePrimerBodies(existing.body, proposed.body) : proposed.body);
+  const fields = normalizePrimerFields(mergedBody);
+  const card = store.upsertPrimer(fields);
+  const event = {
+    ts: new Date().toISOString(),
+    action: existing ? "merge" : "create",
+    proposed,
+    closest_slug: existing ? PRIMER_SLUG : null,
+    reason: decision.reason,
+    result_slug: card.slug
+  };
+  if (existing)
+    result.merged += 1;
+  else
+    result.written += 1;
+  result.events.push(event);
+  logGate(store.home, event);
+  return result;
 }
 async function gateAndWrite(complete, store, proposals, opts) {
   const result = {
@@ -30103,27 +30232,17 @@ async function gateAndWrite(complete, store, proposals, opts) {
       ...proposed,
       kind: rawProp.kind
     };
-    if (isTriviaProposal(asProposal) || isTriviaProposal(proposed)) {
-      const before = store.read(TRIVIA_SLUG);
-      const card = store.upsertTrivia(proposed);
-      const event = {
-        ts: new Date().toISOString(),
-        action: before ? "merge" : "create",
-        proposed,
-        closest_slug: before ? TRIVIA_SLUG : null,
-        reason: before ? "trivia \u2014 merged into single trivia card" : "trivia \u2014 created single trivia card",
-        result_slug: card.slug
-      };
-      if (before)
-        result.merged += 1;
-      else
-        result.written += 1;
-      result.events.push(event);
-      logGate(store.home, event);
+    if (isPrimerProposal(asProposal) || isPrimerProposal(proposed)) {
+      const primed = await gatePrimerProposal(complete, store, proposed, opts);
+      result.written += primed.written;
+      result.merged += primed.merged;
+      result.discarded += primed.discarded;
+      result.skipped += primed.skipped;
+      result.events.push(...primed.events);
       continue;
     }
-    const hive = store.listCards();
-    if (hive.length === 0) {
+    const hive = store.listCards().filter((c) => c.slug !== PRIMER_SLUG);
+    if (hive.length === 0 && !store.read(PRIMER_SLUG)) {
       const card = store.writeNew(proposed);
       const event = {
         ts: new Date().toISOString(),
@@ -30138,12 +30257,13 @@ async function gateAndWrite(complete, store, proposals, opts) {
       logGate(store.home, event);
       continue;
     }
+    const catalog = store.listCards();
     let decision = null;
     let parseError;
     try {
       const raw = await complete({
         system: DEFAULT_GATE_PROMPT,
-        user: formatGateUserMessage(proposed, hive),
+        user: formatGateUserMessage(proposed, catalog),
         host: opts?.host,
         cwd: opts?.cwd ?? join8(store.home, "scratch")
       });
@@ -30191,7 +30311,7 @@ async function gateAndWrite(complete, store, proposals, opts) {
     if (decision.action === "merge") {
       const slug = decision.closest_slug;
       const mergedCard = decision.card ?? proposed;
-      if (!slug || !store.read(slug)) {
+      if (!slug || slug === PRIMER_SLUG || !store.read(slug)) {
         const card = store.writeNew(mergedCard);
         const event = {
           ts: new Date().toISOString(),
@@ -30241,27 +30361,26 @@ async function gateAndWrite(complete, store, proposals, opts) {
 // src/reflection/prompt.ts
 import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
 import { join as join9 } from "path";
-var DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge cards from this session transcript for a shared hive memory (Muton).
+var DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge for a shared hive memory (Muton) from this session transcript.
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
-  "kind": "general" | "trivia",
-  "title": "short distinctive name (also becomes the card filename)",
-  "use_when": "situation, entity, or cue when this card applies",
+  "kind": "general" | "primer",
+  "title": "short distinctive name",
+  "use_when": "situation, entity, or cue when this applies",
   "body": "the durable fact \u2014 concrete and reusable"
 }
 
-Card kinds:
-- general (default): reusable schema/join/tooling/encoding patterns. Prefer these for durable how-to knowledge. You may propose 0\u20135 general cards.
-- trivia: at most ONE item with kind "trivia". Put non-general, session-specific facts here (concrete answers, raceIds, one-off lookups, verified values) that might help later steps. Title should be "Trivia". The hive keeps a single trivia card; new trivia is merged into it.
+You MUST include exactly ONE item with kind "primer" every turn (even if the delta is small). That proposal is a candidate update to the single Schema Primer card \u2014 durable schema, joins, column encodings, db-query tool constraints, and reusable query patterns learned this session. Title should be "Schema Primer". Do NOT put one-off answer keys (a single race winner/time/count) in the primer; put reusable how-to knowledge there.
+
+Optionally also include 0\u20135 kind "general" cards for other durable topics that should stay as separate cards (optional; prefer putting schema/join/tooling into the primer instead).
 
 Rules:
 - Propose only facts supported by the transcript.
-- Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints, verified lookups.
-- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
-- The store merges near-duplicates. Do not list or reuse existing hive titles (except Trivia). Do NOT delete cards. Do NOT invent facts.
-- Prefer fewer high-value general cards (0\u20135) plus optional 0\u20131 trivia. Return [] if nothing useful was learned.
-- title and use_when are mandatory and non-empty. body is the fact. kind may be omitted (treated as general).`;
+- Primer body should be concise bullet-style facts suitable to merge into a standing cheatsheet.
+- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, ephemeral debugging chatter.
+- Do NOT invent facts. Do NOT delete cards.
+- title and use_when are mandatory and non-empty.`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.home ?? mutonHome();
@@ -30295,12 +30414,17 @@ function writeProposedCards(store, proposals) {
       skipped.push(title || "(invalid)");
       continue;
     }
-    const row = { title, use_when: useWhen, body, kind: proposal.kind };
-    if (isTriviaProposal(row)) {
-      written.push(store.upsertTrivia(row));
-    } else {
-      written.push(store.upsert({ title, use_when: useWhen, body }));
+    const row = {
+      title,
+      use_when: useWhen,
+      body,
+      kind: proposal.kind
+    };
+    if (isPrimerProposal(row)) {
+      skipped.push("primer-without-judge");
+      continue;
     }
+    written.push(store.upsert({ title, use_when: useWhen, body }));
   }
   return { written, skipped };
 }
@@ -30317,21 +30441,39 @@ function shouldTryResume(opts) {
   return hostSupportsResume(opts.host ?? "auto");
 }
 async function commitProposals(complete, store, proposals, opts) {
-  if (!cardGateEnabled()) {
-    const result = writeProposedCards(store, proposals);
-    return { written: result.written.length, skipped: result.skipped.length };
+  const primers = proposals.filter((p) => isPrimerProposal(p) || p.kind === "primer");
+  const general = proposals.filter((p) => !(isPrimerProposal(p) || p.kind === "primer"));
+  let written = 0;
+  let skipped = 0;
+  let merged = 0;
+  let discarded = 0;
+  for (const p of primers) {
+    const r = await gatePrimerProposal(complete, store, p, {
+      host: opts.host,
+      cwd: opts.cwd ?? join10(store.home, "scratch")
+    });
+    written += r.written;
+    merged += r.merged;
+    discarded += r.discarded;
+    skipped += r.skipped;
   }
-  const gated = await gateAndWrite(complete, store, proposals, {
+  if (!cardGateEnabled()) {
+    const result = writeProposedCards(store, general);
+    written += result.written.length;
+    skipped += result.skipped.length;
+    log(store.home, `commit primer+ungated wrote=${written} merged=${merged} discarded=${discarded} skipped=${skipped}`);
+    return { written, skipped, merged, discarded };
+  }
+  const gated = await gateAndWrite(complete, store, general, {
     host: opts.host,
     cwd: opts.cwd ?? join10(store.home, "scratch")
   });
+  written += gated.written;
+  merged += gated.merged;
+  discarded += gated.discarded;
+  skipped += gated.skipped;
   log(store.home, `gate wrote=${gated.written} merged=${gated.merged} discarded=${gated.discarded} skipped=${gated.skipped}`);
-  return {
-    written: gated.written,
-    skipped: gated.skipped,
-    merged: gated.merged,
-    discarded: gated.discarded
-  };
+  return { written, skipped, merged, discarded };
 }
 async function reflect(opts) {
   const store = new CardStore(opts.home);
@@ -30409,7 +30551,7 @@ function parseProposals(raw) {
 }
 function filterProposals(parsed) {
   const out = [];
-  let sawTrivia = false;
+  let sawPrimer = false;
   for (const p of parsed) {
     if (!p || typeof p !== "object")
       continue;
@@ -30418,22 +30560,22 @@ function filterProposals(parsed) {
       continue;
     }
     const kindRaw = typeof o.kind === "string" ? o.kind.trim().toLowerCase() : undefined;
-    const kind = kindRaw === "trivia" || kindRaw === "general" ? kindRaw : undefined;
+    const kind = kindRaw === "primer" || kindRaw === "general" ? kindRaw : undefined;
     const row = {
       title: o.title,
       use_when: o.use_when,
       body: o.body,
       kind
     };
-    if (isTriviaProposal(row)) {
-      if (sawTrivia)
+    if (isPrimerProposal(row)) {
+      if (sawPrimer)
         continue;
-      sawTrivia = true;
+      sawPrimer = true;
       out.push({
-        title: "Trivia",
+        title: "Schema Primer",
         use_when: o.use_when,
         body: o.body,
-        kind: "trivia"
+        kind: "primer"
       });
     } else {
       out.push({

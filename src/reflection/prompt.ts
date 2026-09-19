@@ -3,27 +3,26 @@ import { join } from "node:path";
 import { mutonHome } from "../store/fs.ts";
 
 /** Built-in reflection prompt. Always used as the base; extra REFLECTION.md is appended. */
-export const DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge cards from this session transcript for a shared hive memory (Muton).
+export const DEFAULT_REFLECTION_PROMPT = `You extract durable knowledge for a shared hive memory (Muton) from this session transcript.
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
-  "kind": "general" | "trivia",
-  "title": "short distinctive name (also becomes the card filename)",
-  "use_when": "situation, entity, or cue when this card applies",
+  "kind": "general" | "primer",
+  "title": "short distinctive name",
+  "use_when": "situation, entity, or cue when this applies",
   "body": "the durable fact — concrete and reusable"
 }
 
-Card kinds:
-- general (default): reusable schema/join/tooling/encoding patterns. Prefer these for durable how-to knowledge. You may propose 0–5 general cards.
-- trivia: at most ONE item with kind "trivia". Put non-general, session-specific facts here (concrete answers, raceIds, one-off lookups, verified values) that might help later steps. Title should be "Trivia". The hive keeps a single trivia card; new trivia is merged into it.
+You MUST include exactly ONE item with kind "primer" every turn (even if the delta is small). That proposal is a candidate update to the single Schema Primer card — durable schema, joins, column encodings, db-query tool constraints, and reusable query patterns learned this session. Title should be "Schema Primer". Do NOT put one-off answer keys (a single race winner/time/count) in the primer; put reusable how-to knowledge there.
+
+Optionally also include 0–5 kind "general" cards for other durable topics that should stay as separate cards (optional; prefer putting schema/join/tooling into the primer instead).
 
 Rules:
 - Propose only facts supported by the transcript.
-- Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints, verified lookups.
-- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
-- The store merges near-duplicates. Do not list or reuse existing hive titles (except Trivia). Do NOT delete cards. Do NOT invent facts.
-- Prefer fewer high-value general cards (0–5) plus optional 0–1 trivia. Return [] if nothing useful was learned.
-- title and use_when are mandatory and non-empty. body is the fact. kind may be omitted (treated as general).`;
+- Primer body should be concise bullet-style facts suitable to merge into a standing cheatsheet.
+- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, ephemeral debugging chatter.
+- Do NOT invent facts. Do NOT delete cards.
+- title and use_when are mandatory and non-empty.`;
 
 /**
  * Default prompt, plus the first extra REFLECTION.md found (project, then home).

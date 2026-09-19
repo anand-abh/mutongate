@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Card } from "../cards/index.ts";
-import { TRIVIA_SLUG } from "../cards/trivia.ts";
+import { PRIMER_SLUG } from "../cards/primer.ts";
 import type { CardStore } from "../store/index.ts";
 import type { RankedHit } from "./rerank.ts";
 import { rerank } from "./rerank.ts";
@@ -20,7 +20,7 @@ export type SearchOptions = {
 };
 
 export type SearchChannel = {
-  name: "instruction" | "question" | "trivia";
+  name: "instruction" | "question" | "primer";
   query_chars: number;
   query_head: string;
   n_hits: number;
@@ -85,9 +85,9 @@ function rankQuery(
   return ranked.slice(0, k);
 }
 
-/** Pin the single trivia card (if any) as a synthetic top hit. */
-function triviaHit(store: CardStore): RankedHit | null {
-  const card = store.read(TRIVIA_SLUG);
+/** Pin the single schema primer (if any) as a synthetic top hit. */
+function primerHit(store: CardStore): RankedHit | null {
+  const card = store.read(PRIMER_SLUG);
   if (!card) return null;
   return cardToHit(card, Number.POSITIVE_INFINITY);
 }
@@ -106,10 +106,7 @@ function cardToHit(card: Card, score: number): RankedHit {
 }
 
 /**
- * Hybrid k+k: instruction prompt → k_instruction Cards, question.md → k_question.
- * Always includes the trivia card (if present) in addition to both channels.
- * Defaults 3+3. Override via options or MUTON_HYBRID_K_INSTRUCTION /
- * MUTON_HYBRID_K_QUESTION. No rewrite — question file text as-is.
+ * Hybrid k+k: instruction + question channels, plus always-pinned schema primer.
  */
 export function searchCardsHybrid(
   store: CardStore,
@@ -123,17 +120,17 @@ export function searchCardsHybrid(
   const kQ =
     options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
   const exclude = new Set<string>(options.excludeSlugs ?? []);
-  const pinned = triviaHit(store);
-  if (pinned) exclude.add(TRIVIA_SLUG);
+  const pinned = primerHit(store);
+  if (pinned) exclude.add(PRIMER_SLUG);
   const channels: SearchChannel[] = [];
 
   if (pinned) {
     channels.push({
-      name: "trivia",
+      name: "primer",
       query_chars: 0,
       query_head: "(pinned)",
       n_hits: 1,
-      slugs: [TRIVIA_SLUG],
+      slugs: [PRIMER_SLUG],
     });
   }
 
@@ -174,7 +171,6 @@ export function searchCardsHybrid(
     });
   }
 
-  // Trivia first (pinned), then instruction/meta, then question/task Cards.
   const hits = pinned ? [pinned, ...instHits, ...qHits] : [...instHits, ...qHits];
   const context = formatContext(hits, maxChars);
   return {
@@ -183,15 +179,15 @@ export function searchCardsHybrid(
     rewrite: {
       original: instruction,
       rewritten: question
-        ? `[hybrid] trivia+instruction[${kInst}]+question[${kQ}]`
-        : `[hybrid] trivia+instruction[${kInst}] only`,
+        ? `[hybrid] primer+instruction[${kInst}]+question[${kQ}]`
+        : `[hybrid] primer+instruction[${kInst}] only`,
       source: question ? "question_file" : "prompt",
     },
     channels,
   };
 }
 
-/** Search Cards with BM25 then rerank; format injection context. */
+/** Search Cards with BM25 then rerank; always pin primer when present. */
 export function searchCards(
   store: CardStore,
   query: string,
@@ -208,8 +204,8 @@ export function searchCards(
   const k = options.k ?? DEFAULT_K;
   const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
   const exclude = new Set<string>(options.excludeSlugs ?? []);
-  const pinned = triviaHit(store);
-  if (pinned) exclude.add(TRIVIA_SLUG);
+  const pinned = primerHit(store);
+  if (pinned) exclude.add(PRIMER_SLUG);
 
   const skipRewrite =
     options.skipRewrite ||

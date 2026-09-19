@@ -2,10 +2,12 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Card } from "../cards/index.ts";
 import {
-  isTriviaProposal,
-  TRIVIA_SLUG,
+  isPrimerProposal,
+  mergePrimerBodies,
+  normalizePrimerFields,
+  PRIMER_SLUG,
   type ProposalInput,
-} from "../cards/trivia.ts";
+} from "../cards/primer.ts";
 import type { Completer } from "./complete/index.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
 import { logsDir } from "../store/index.ts";
@@ -37,7 +39,7 @@ export type GateWriteResult = {
   events: GateEvent[];
 };
 
-/** System prompt for post-reflect card gating. */
+/** System prompt for post-reflect card gating (general cards only). */
 export const DEFAULT_GATE_PROMPT = `You maintain a shared hive of durable knowledge cards (Muton).
 
 You are given ONE proposed card and the FULL current hive catalog. Your job:
@@ -50,9 +52,9 @@ You are given ONE proposed card and the FULL current hive catalog. Your job:
 If the hive is empty or nothing is meaningfully similar, choose create.
 
 Keep answer keys when the body encodes how to look the value up again. Discard bare answers with no recipe.
-Prefer create over discard when topics diverge (example: closest is a general races↔circuits join, but the proposal is a specific race count or qualifying result).
+Prefer create over discard when topics diverge.
 Prefer create over merge for circuit-/race-/result-/season-specific facts; reserve merge for true schema/tooling duplicates.
-Do not manage the Trivia card here — trivia proposals are merged automatically outside this prompt.
+Do not manage the Schema Primer card here — primer updates are decided by a separate primer judge.
 
 Return ONLY JSON (no markdown fences, no commentary):
 {
@@ -66,6 +68,34 @@ Rules for the JSON:
 - discard: card may be null.
 - create: card is the (optionally cleaned) proposal; set closest_slug if you considered one.
 - merge: closest_slug is REQUIRED and must be an existing slug; card is the full replacement fields for that slug (union of old + new durable facts).`;
+
+/** Judge whether a primer proposal should update the single Schema Primer. */
+export const DEFAULT_PRIMER_PROMPT = `You maintain ONE Schema Primer card for a database-analytics coding agent that starts a FRESH chat on every question.
+
+The primer is always injected into the next session. It must stay compact and high-value: durable schema, joins, column encodings, db-query tool constraints, and reusable query patterns. It must NOT become a dump of one-off answers.
+
+You are given:
+1. The CURRENT primer (may be empty).
+2. A PROPOSED primer update extracted from the latest session.
+
+Decide exactly one action:
+- merge — the proposal adds durable informational value not already covered. Return the FULL updated primer as card.body (rewrite/union into a concise cheatsheet; dedupe; keep bullets short).
+- discard — the proposal is redundant with the current primer, only a one-off answer key (single race/result with no reusable pattern), speculative, or empty of durable value.
+
+Prefer KEEP / merge for: table relationships, key columns, encodings (e.g. NULL meanings), join paths, DISTINCT/ORDER rules, db query interface limits.
+Prefer DISCARD for: single-question answers, race-specific values without a general rule, duplicate schema already listed, vague advice.
+
+Return ONLY JSON:
+{
+  "action": "merge" | "discard",
+  "reason": "one short sentence",
+  "card": { "title": "Schema Primer", "use_when": "...", "body": "..." }
+}
+
+Rules:
+- discard: card may be null.
+- merge: card.body is the complete primer text to store (not just the delta).
+- Keep the primer under ~1500 tokens of content when possible; drop lower-value lines if needed.`;
 
 export function cardGateEnabled(): boolean {
   const v = (process.env.MUTON_CARD_GATE ?? "1").trim().toLowerCase();
@@ -90,6 +120,20 @@ body: ${proposal.body}
 
 ## Hive catalog (${cards.length} cards)
 ${formatHiveCatalog(cards)}`;
+}
+
+export function formatPrimerUserMessage(
+  currentBody: string | null,
+  proposal: ProposeInput,
+): string {
+  return `## Current Schema Primer
+${currentBody?.trim() ? currentBody.trim() : "(empty — no primer yet)"}
+
+## Proposed primer update
+title: ${proposal.title}
+use_when: ${proposal.use_when}
+body:
+${proposal.body}`;
 }
 
 export function parseGateDecision(raw: string): GateDecision | null {
@@ -151,12 +195,126 @@ function normalizeProposal(p: ProposeInput): ProposeInput | null {
   const use_when = p.use_when?.trim();
   const body = p.body?.trim();
   if (!title || !use_when || !body) return null;
-  return { title, use_when, body };
+  return { title, use_when, body, kind: p.kind };
 }
 
 /**
- * Gate each proposal against the live hive via the same Completer as reflect.
- * Sequential: later proposals see earlier creates/merges.
+ * Decide whether a primer proposal updates the single Schema Primer.
+ * Always uses the Completer (independent of MUTON_CARD_GATE for general cards).
+ */
+export async function gatePrimerProposal(
+  complete: Completer,
+  store: CardStore,
+  proposal: ProposeInput,
+  opts?: { host?: "claude" | "cursor" | "codex" | "pi" | "auto"; cwd?: string },
+): Promise<GateWriteResult> {
+  const result: GateWriteResult = {
+    written: 0,
+    merged: 0,
+    discarded: 0,
+    skipped: 0,
+    events: [],
+  };
+  const proposed = normalizeProposal(proposal);
+  if (!proposed) {
+    result.skipped += 1;
+    return result;
+  }
+
+  const existing = store.read(PRIMER_SLUG);
+  let decision: GateDecision | null = null;
+  let parseError: string | undefined;
+  try {
+    const raw = await complete({
+      system: DEFAULT_PRIMER_PROMPT,
+      user: formatPrimerUserMessage(existing?.body ?? null, proposed),
+      host: opts?.host,
+      cwd: opts?.cwd ?? join(store.home, "scratch"),
+    });
+    decision = parseGateDecision(raw);
+    if (!decision) parseError = "unparsable-primer-json";
+    else if (decision.action === "create") {
+      // Primer judge only returns merge|discard; treat create as merge.
+      decision = { ...decision, action: "merge" };
+    }
+  } catch (err) {
+    parseError = err instanceof Error ? err.message : String(err);
+  }
+
+  if (!decision) {
+    // Soft fail: if no primer yet, create from proposal; else discard to avoid bloat.
+    if (!existing) {
+      const card = store.upsertPrimer(proposed);
+      const event: GateEvent = {
+        ts: new Date().toISOString(),
+        action: "create",
+        proposed,
+        closest_slug: null,
+        reason: "primer parse/error — created from proposal",
+        result_slug: card.slug,
+        error: parseError,
+      };
+      result.written += 1;
+      result.events.push(event);
+      logGate(store.home, event);
+    } else {
+      const event: GateEvent = {
+        ts: new Date().toISOString(),
+        action: "discard",
+        proposed,
+        closest_slug: PRIMER_SLUG,
+        reason: "primer parse/error — discarded",
+        result_slug: null,
+        error: parseError,
+      };
+      result.discarded += 1;
+      result.events.push(event);
+      logGate(store.home, event);
+    }
+    return result;
+  }
+
+  if (decision.action === "discard") {
+    const event: GateEvent = {
+      ts: new Date().toISOString(),
+      action: "discard",
+      proposed,
+      closest_slug: existing ? PRIMER_SLUG : null,
+      reason: decision.reason,
+      result_slug: null,
+    };
+    result.discarded += 1;
+    result.events.push(event);
+    logGate(store.home, event);
+    return result;
+  }
+
+  // merge
+  const mergedBody =
+    decision.card?.body?.trim() ||
+    (existing
+      ? mergePrimerBodies(existing.body, proposed.body)
+      : proposed.body);
+  const fields = normalizePrimerFields(mergedBody);
+  const card = store.upsertPrimer(fields);
+  const event: GateEvent = {
+    ts: new Date().toISOString(),
+    action: existing ? "merge" : "create",
+    proposed,
+    closest_slug: existing ? PRIMER_SLUG : null,
+    reason: decision.reason,
+    result_slug: card.slug,
+  };
+  if (existing) result.merged += 1;
+  else result.written += 1;
+  result.events.push(event);
+  logGate(store.home, event);
+  return result;
+}
+
+/**
+ * Gate each general proposal against the live hive via the Completer.
+ * Primer proposals must be handled via gatePrimerProposal (not here).
  */
 export async function gateAndWrite(
   complete: Completer,
@@ -179,35 +337,24 @@ export async function gateAndWrite(
       continue;
     }
 
-    // Trivia: always upsert into the single `trivia` slug (no LLM gate).
     const asProposal: ProposalInput = {
       ...proposed,
       kind: (rawProp as ProposalInput).kind,
     };
-    if (isTriviaProposal(asProposal) || isTriviaProposal(proposed)) {
-      const before = store.read(TRIVIA_SLUG);
-      const card = store.upsertTrivia(proposed);
-      const event: GateEvent = {
-        ts: new Date().toISOString(),
-        action: before ? "merge" : "create",
-        proposed,
-        closest_slug: before ? TRIVIA_SLUG : null,
-        reason: before
-          ? "trivia — merged into single trivia card"
-          : "trivia — created single trivia card",
-        result_slug: card.slug,
-      };
-      if (before) result.merged += 1;
-      else result.written += 1;
-      result.events.push(event);
-      logGate(store.home, event);
+    if (isPrimerProposal(asProposal) || isPrimerProposal(proposed)) {
+      const primed = await gatePrimerProposal(complete, store, proposed, opts);
+      result.written += primed.written;
+      result.merged += primed.merged;
+      result.discarded += primed.discarded;
+      result.skipped += primed.skipped;
+      result.events.push(...primed.events);
       continue;
     }
 
-    const hive = store.listCards();
+    const hive = store.listCards().filter((c) => c.slug !== PRIMER_SLUG);
 
-    // Empty hive: create without an LLM gate call
-    if (hive.length === 0) {
+    // Empty hive (ignoring primer): create without an LLM gate call
+    if (hive.length === 0 && !store.read(PRIMER_SLUG)) {
       const card = store.writeNew(proposed);
       const event: GateEvent = {
         ts: new Date().toISOString(),
@@ -223,12 +370,15 @@ export async function gateAndWrite(
       continue;
     }
 
+    // If only primer exists, still allow LLM gate against primer+empty general set
+    const catalog = store.listCards();
+
     let decision: GateDecision | null = null;
     let parseError: string | undefined;
     try {
       const raw = await complete({
         system: DEFAULT_GATE_PROMPT,
-        user: formatGateUserMessage(proposed, hive),
+        user: formatGateUserMessage(proposed, catalog),
         host: opts?.host,
         cwd: opts?.cwd ?? join(store.home, "scratch"),
       });
@@ -238,7 +388,6 @@ export async function gateAndWrite(
       parseError = err instanceof Error ? err.message : String(err);
     }
 
-    // Soft failure: bad gate output → lexical upsert (do not drop learning)
     if (!decision) {
       const before = store.cardCount();
       const card = store.upsert(proposed);
@@ -277,8 +426,7 @@ export async function gateAndWrite(
     if (decision.action === "merge") {
       const slug = decision.closest_slug;
       const mergedCard = decision.card ?? proposed;
-      if (!slug || !store.read(slug)) {
-        // Invalid merge target → fall back to create
+      if (!slug || slug === PRIMER_SLUG || !store.read(slug)) {
         const card = store.writeNew(mergedCard);
         const event: GateEvent = {
           ts: new Date().toISOString(),
@@ -309,7 +457,6 @@ export async function gateAndWrite(
       continue;
     }
 
-    // create
     const createCard = decision.card ?? proposed;
     const card = store.writeNew(createCard);
     const event: GateEvent = {
