@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.sqlite
+harbor/mounts-hooks.json
 harbor/muton-home/cards/*
 !harbor/muton-home/cards/.gitkeep
 harbor/muton-home/logs/*

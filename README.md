@@ -10,8 +10,9 @@ Version: `0.2.1-qr3-cardgate`
 |------|---------|
 | `src/` | Muton CLI source (hybrid FTS, stock reflect, `src/reflection/gate.ts`) |
 | `prompts/REFLECTION.md` | Stock reflection prompt |
-| `harbor/` | Harbor/Pi wiring: `muton-real`, wrapper, Pi extension, mounts |
-| `scripts/run-smoke.sh` | Example Harbor smoke runner |
+| `harbor/` | Harbor/Pi wiring: `muton-real`, wrapper, Pi extension, mounts template |
+| `scripts/run-database-analytics.sh` | Smoke 10 / medium 40 / full 174 Harbor runner |
+| `scripts/harbor-run.sh` | Low-level `harbor run -p <task>` (any slice or full task path) |
 
 ## Build
 
@@ -34,17 +35,25 @@ echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
 
 Stock reflect = “Prefer concrete state…” (not schemaref / outcome-aware).
 
-## Harbor smoke (needs agent-learning-bench nearby)
+## Harbor database-analytics (10 / 40 / 174)
+
+Needs [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench) nearby, plus Docker, Harbor CLI, Bun, and `OPENAI_API_KEY`. Details: [docs/DATABASE-ANALYTICS.md](docs/DATABASE-ANALYTICS.md).
 
 ```bash
-export MUTONGATE_ROOT=/path/to/mutongate
+export AGENT_LEARNING_BENCH=/path/to/agent-learning-bench
 export OPENAI_API_KEY=…
-# rewrite mounts to your absolute MUTONGATE_ROOT if needed
-./scripts/run-smoke.sh 3 3 /path/to/agent-learning-bench/.alb/smoke/database-analytics-hooks10
+# Bun is discovered via command -v bun (override with BUN_BIN)
+
+./scripts/run-database-analytics.sh 10          # first 10 → .alb/smoke/database-analytics
+./scripts/run-database-analytics.sh --n 40      # first 40 → same alb slice dest
+./scripts/run-database-analytics.sh 174         # full task → tasks/database-analytics
 ```
+
+There is no `database-analytics-hooks10` directory. Smoke/medium share `.alb/smoke/database-analytics`; the runner re-slices to N each time. Full 174 does not slice.
 
 ## Docs
 
+- [docs/DATABASE-ANALYTICS.md](docs/DATABASE-ANALYTICS.md) — 10 / 40 / 174 recipes
 - [docs/CARDGATE.md](docs/CARDGATE.md) — gate prompt & actions
 - [docs/HYBRID.md](docs/HYBRID.md) — hybrid k
 
