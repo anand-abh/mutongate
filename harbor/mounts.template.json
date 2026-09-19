@@ -1,0 +1,37 @@
+[
+  {
+    "type": "bind",
+    "source": "<BUN_BIN>",
+    "target": "/usr/local/bin/bun",
+    "read_only": true
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/bin/muton-real",
+    "target": "/usr/local/libexec/muton-real",
+    "read_only": true
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/muton-wrapper.sh",
+    "target": "/usr/local/bin/muton",
+    "read_only": true
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/muton-home",
+    "target": "/home/agent/.agents/muton"
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/opt-muton/muton.ts",
+    "target": "/opt/muton/muton.ts",
+    "read_only": true
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/opt-muton/bashenv.sh",
+    "target": "/opt/muton/bashenv.sh",
+    "read_only": true
+  }
+]

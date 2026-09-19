@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.sqlite
+harbor/muton-home/cards/*
+!harbor/muton-home/cards/.gitkeep
+harbor/muton-home/logs/*
+!harbor/muton-home/logs/.gitkeep
+harbor/muton-home/scratch/*
+harbor/muton-home/tmp/*
+.env
+.DS_Store
