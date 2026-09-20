@@ -10,7 +10,11 @@ Harbor Pi does **not** auto-inject search hits. The extension registers a `muton
 
 - Semantic (cosine) search over card embeddings
 - Budget: **10** calls per step (`MUTON_MAX_SEARCHES`)
-- Prompt guidelines tell the model to search for **schema** facts and **question-specific** facts before relying on the DB alone
+- Prompt guidelines tell the model to:
+  1. **Minimize `db query` count** (prefer 1–2 targeted SQL statements)
+  2. Search **schema** then **question-specific** facts via `muton_search` first
+  3. **Trust hive schema** — do not re-run `sqlite_master` / `PRAGMA` when search already covered the needed tables/joins
+  4. Only fall back to DB schema inspection when search misses
 
 Env for Harbor: `MUTON_VECTOR=1`, `MUTON_HYBRID=0`, `MUTON_CARD_GATE=0`.
 

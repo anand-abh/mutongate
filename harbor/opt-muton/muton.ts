@@ -13,10 +13,11 @@ import { join } from "node:path";
 const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
 
 const SEARCH_GUIDELINES = [
-  "Use muton_search before issuing database queries when the hive may already know relevant facts (at most 10 searches this step).",
-  "With muton_search, first look for schema information: tables, joins, column encodings, and db-query tool constraints.",
-  "With muton_search, also check whether any card matches the current question's specific entities or lookup pattern.",
-  "If muton_search returns no cards, treat that as absence of hive memory for that query — then inspect the DB with db query.",
+  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible.",
+  "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
+  "If muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
+  "Only fall back to sqlite_master / PRAGMA when muton_search returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
+  "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_search for the same topic.",
 ];
 
 function loadType() {
@@ -101,7 +102,8 @@ export default function (pi) {
     });
     const tip = [
       "",
-      "MUTON HIVE (vector search — call the muton_search tool; nothing is auto-injected)",
+      "MUTON HIVE (vector search — call muton_search; nothing is auto-injected)",
+      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema from muton_search and minimize db query count.",
       ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
     ].join("\n");
     return {

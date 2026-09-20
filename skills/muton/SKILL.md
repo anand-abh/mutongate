@@ -15,7 +15,7 @@ Before unfamiliar schema/API work, call the `muton_search` tool (Harbor Pi) or:
 MUTON_VECTOR=1 muton search "qualifying q1 null encoding"
 ```
 
-Prefer searching for schema/joins first, then question-specific facts. Up to 10 searches per step.
+Prefer searching for schema/joins first, then question-specific facts (up to 10 searches per step). **Minimize `db query` calls.** If hive cards already give the needed schema/joins, do not re-inspect with `sqlite_master` / `PRAGMA`.
 
 ## When to propose
 
