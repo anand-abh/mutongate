@@ -1,52 +1,235 @@
-// Muton Pi extension — hybrid 3+3 search (instruction + question), await reflect
-import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+// Muton Pi extension — agentic vector search tool + silent reflect
+import { execFileSync, spawn } from "node:child_process";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
+
+const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
+
+const SEARCH_GUIDELINES = [
+  "Use muton_search before issuing database queries when the hive may already know relevant facts (at most 10 searches this step).",
+  "With muton_search, first look for schema information: tables, joins, column encodings, and db-query tool constraints.",
+  "With muton_search, also check whether any card matches the current question's specific entities or lookup pattern.",
+  "If muton_search returns no cards, treat that as absence of hive memory for that query — then inspect the DB with db query.",
+];
+
+function loadType() {
+  const bases = [];
+  try {
+    const which = execFileSync("bash", ["-lc", "command -v pi"], {
+      encoding: "utf8",
+    }).trim();
+    if (which) bases.push(which);
+  } catch {
+    // ignore
+  }
+  bases.push(join(process.cwd(), "package.json"), "/proc/self/exe");
+  for (const base of bases) {
+    try {
+      const req = createRequire(base);
+      for (const spec of ["typebox", "@sinclair/typebox"]) {
+        try {
+          return req(spec).Type;
+        } catch {
+          // try next
+        }
+      }
+    } catch {
+      // try next base
+    }
+  }
+  return null;
+}
+
+function homeDir() {
+  return process.env.MUTON_HOME || "/tmp/muton-agent-store";
+}
+
+function searchCountPath() {
+  return join(homeDir(), "logs", "muton-search-count.json");
+}
+
+function readSearchCount() {
+  try {
+    const p = searchCountPath();
+    if (!existsSync(p)) return 0;
+    const data = JSON.parse(readFileSync(p, "utf8"));
+    return typeof data.count === "number" ? data.count : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeSearchCount(count) {
+  try {
+    const dir = join(homeDir(), "logs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(searchCountPath(), `${JSON.stringify({ count })}\n`);
+  } catch {
+    // ignore
+  }
+}
+
+function logHook(payload) {
+  try {
+    const home = homeDir();
+    mkdirSync(home, { recursive: true });
+    appendFileSync(
+      join(home, "hook-debug.log"),
+      `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}\n`,
+    );
+  } catch {
+    // ignore
+  }
+}
 
 export default function (pi) {
+  // Reset per-step search budget; inject guidelines only (no auto-retrieved cards).
   pi.on("before_agent_start", async (event) => {
-    try {
-      const prompt = event.prompt ?? "";
-      const home = process.env.MUTON_HOME || "/tmp/muton-agent-store";
-      try {
-        mkdirSync(home, { recursive: true });
-        appendFileSync(
-          `${home}/hook-debug.log`,
-          `${JSON.stringify({
-            ts: new Date().toISOString(),
-            event: "before_agent_start",
-            prompt_chars: prompt.length,
-            hybrid: process.env.MUTON_HYBRID || null,
-          })}\n`,
-        );
-      } catch {
-        // ignore
-      }
+    writeSearchCount(0);
+    logHook({
+      event: "before_agent_start",
+      prompt_chars: (event.prompt ?? "").length,
+      vector: process.env.MUTON_VECTOR || null,
+      auto_inject: "0",
+    });
+    const tip = [
+      "",
+      "MUTON HIVE (vector search — call the muton_search tool; nothing is auto-injected)",
+      ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
+    ].join("\n");
+    return {
+      systemPrompt: `${event.systemPrompt || ""}\n${tip}`,
+    };
+  });
 
-      const out = await runMuton(["search", "--json", prompt || "project"]);
-      const data = JSON.parse(out);
-      const context = data.context;
-      try {
-        appendFileSync(
-          `${home}/hook-debug.log`,
-          `${JSON.stringify({
-            ts: new Date().toISOString(),
-            event: "search_result",
-            n_hits: (data.hits || []).length,
-            hit_slugs: (data.hits || []).map((h) => h.slug),
-            channels: data.channels || null,
-            context_chars: (context || "").length,
-          })}\n`,
-        );
-      } catch {
-        // ignore
-      }
-      if (!context) return;
-      return {
-        systemPrompt: event.systemPrompt + "\n\n" + context,
+  const Type = loadType();
+  const parameters = Type
+    ? Type.Object({
+        query: Type.String({
+          description:
+            "Natural-language search over durable Muton cards (schema, joins, encodings, or question-specific facts)",
+        }),
+        k: Type.Optional(
+          Type.Number({
+            description: "Max cards to return (default 5)",
+          }),
+        ),
+      })
+    : {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Natural-language search over durable Muton cards (schema, joins, encodings, or question-specific facts)",
+          },
+          k: {
+            type: "number",
+            description: "Max cards to return (default 5)",
+          },
+        },
+        required: ["query"],
       };
-    } catch {
-      return;
-    }
+
+  pi.registerTool({
+    name: "muton_search",
+    label: "Muton Search",
+    description:
+      "Semantic search over the shared Muton card hive (vector embeddings). Use for schema/join facts and question-specific prior knowledge. Limit: 10 calls per step.",
+    promptSnippet: "Search Muton hive cards by meaning (schema + question-specific)",
+    promptGuidelines: SEARCH_GUIDELINES,
+    parameters,
+    async execute(_toolCallId, params) {
+      const used = readSearchCount();
+      if (used >= MAX_SEARCHES) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `muton_search budget exhausted (${MAX_SEARCHES} searches this step). Continue with db query / local reasoning.`,
+            },
+          ],
+          details: { blocked: true, used, max: MAX_SEARCHES },
+        };
+      }
+      const query = String(params?.query ?? "").trim();
+      if (!query) {
+        return {
+          content: [{ type: "text", text: "query is required" }],
+          details: { error: "missing-query" },
+        };
+      }
+      const k =
+        typeof params?.k === "number" && params.k > 0 ? Math.min(params.k, 10) : 5;
+      try {
+        const out = await runMuton([
+          "search",
+          "--json",
+          "--k",
+          String(k),
+          query,
+        ]);
+        writeSearchCount(used + 1);
+        let data;
+        try {
+          data = JSON.parse(out);
+        } catch {
+          data = null;
+        }
+        logHook({
+          event: "muton_search",
+          query_chars: query.length,
+          query_head: query.slice(0, 120),
+          used: used + 1,
+          n_hits: data?.hits?.length ?? 0,
+          hit_slugs: (data?.hits || []).map((h) => h.slug),
+        });
+        if (!data) {
+          return {
+            content: [{ type: "text", text: out || "No cards found." }],
+            details: { used: used + 1 },
+          };
+        }
+        const text =
+          data.context?.trim() ||
+          (data.hits?.length
+            ? data.hits
+                .map(
+                  (h) =>
+                    `### ${h.title}\nUse when: ${h.use_when}\nscore=${h.score}\n${h.body || ""}`,
+                )
+                .join("\n\n")
+            : "No cards found.");
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${text}\n\n(muton_search ${used + 1}/${MAX_SEARCHES})`,
+            },
+          ],
+          details: {
+            used: used + 1,
+            max: MAX_SEARCHES,
+            n_hits: data.hits?.length ?? 0,
+            slugs: (data.hits || []).map((h) => h.slug),
+          },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logHook({ event: "muton_search_error", error: msg.slice(0, 200) });
+        return {
+          content: [{ type: "text", text: `muton_search failed: ${msg}` }],
+          details: { error: msg },
+        };
+      }
+    },
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -62,12 +245,26 @@ export default function (pi) {
 
 function runMuton(args) {
   return new Promise((resolve, reject) => {
-    const child = spawn("muton", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("muton", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        MUTON_VECTOR: process.env.MUTON_VECTOR || "1",
+      },
+    });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += String(d)));
-    child.stderr.on("data", (d) => (stderr += String(d)));
+    child.stdout.on("data", (d) => {
+      stdout += String(d);
+    });
+    child.stderr.on("data", (d) => {
+      stderr += String(d);
+    });
     child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr || stdout))));
+    child.on("close", (code) =>
+      code === 0
+        ? resolve(stdout)
+        : reject(new Error(stderr || stdout || `exit ${code}`)),
+    );
   });
 }

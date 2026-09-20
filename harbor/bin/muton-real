@@ -6978,6 +6978,98 @@ var require_public_api = __commonJS(function(exports) {
   exports.stringify = stringify;
 });
 
+// src/search/embed.ts
+function embedModel() {
+  return (process.env.MUTON_EMBED_MODEL ?? DEFAULT_EMBED_MODEL).trim() || DEFAULT_EMBED_MODEL;
+}
+function apiKey() {
+  return process.env.MUTON_API_KEY || process.env.OPENAI_API_KEY || undefined;
+}
+function apiBase() {
+  return (process.env.MUTON_API_BASE ?? "https://api.openai.com/v1").replace(/\/$/, "");
+}
+function mockEmbed(text, dims = 32) {
+  const out = new Float32Array(dims);
+  const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
+  for (const tok of tokens) {
+    let h = 0;
+    for (let i = 0;i < tok.length; i++)
+      h = h * 31 + tok.charCodeAt(i) >>> 0;
+    out[h % dims] += 1;
+  }
+  return l2Normalize(out);
+}
+function l2Normalize(v) {
+  let sum = 0;
+  for (let i = 0;i < v.length; i++)
+    sum += v[i] * v[i];
+  const n = Math.sqrt(sum);
+  if (n === 0)
+    return v;
+  const out = new Float32Array(v.length);
+  for (let i = 0;i < v.length; i++)
+    out[i] = v[i] / n;
+  return out;
+}
+function cosineSimilarity(a, b) {
+  const n = Math.min(a.length, b.length);
+  let dot = 0;
+  for (let i = 0;i < n; i++)
+    dot += a[i] * b[i];
+  return dot;
+}
+function cardEmbedText(card) {
+  return `${card.title}
+Use when: ${card.use_when}
+${card.body}`.trim();
+}
+async function embedText(text) {
+  const model = embedModel();
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { vector: mockEmbed("", 32), model: "mock-empty" };
+  }
+  if (process.env.MUTON_EMBED_MOCK === "1" || process.env.MUTON_EMBED_MOCK === "true") {
+    return { vector: mockEmbed(trimmed), model: "mock" };
+  }
+  const key = apiKey();
+  if (!key) {
+    throw new Error("MUTON_API_KEY or OPENAI_API_KEY required for embeddings");
+  }
+  const res = await fetch(`${apiBase()}/embeddings`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model,
+      input: trimmed.slice(0, 30000)
+    })
+  });
+  if (!res.ok) {
+    throw new Error(`Embeddings HTTP ${res.status}: ${await res.text()}`);
+  }
+  const data = await res.json();
+  const raw = data.data?.[0]?.embedding;
+  if (!raw?.length)
+    throw new Error("Embeddings response missing vector");
+  return {
+    vector: l2Normalize(Float32Array.from(raw)),
+    model: data.model ?? model
+  };
+}
+function vectorToBuffer(v) {
+  return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+}
+function bufferToVector(buf) {
+  const copy = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const aligned = new ArrayBuffer(copy.byteLength);
+  new Uint8Array(aligned).set(copy);
+  return new Float32Array(aligned);
+}
+var DEFAULT_EMBED_MODEL = "text-embedding-3-small";
+
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
@@ -13907,139 +13999,15 @@ function normalizeHookInput(eventName, rawInput, hostHint) {
 }
 
 // src/hooks/prompt-submit.ts
-import { existsSync as existsSync5, readFileSync as readFileSync6, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
 
 // src/search/index.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 
 // src/cards/initial.ts
-import { existsSync, readFileSync } from "node:fs";
 var INITIAL_SLUG = "initial";
 var INITIAL_TITLE = "Initial";
 var INITIAL_USE_WHEN = "Every succeeding database-analytics step — chat logs from the first three steps";
-function initialStepWindow() {
-  const v = process.env.MUTON_INITIAL_STEPS;
-  if (v === undefined || v === "")
-    return 3;
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n >= 0 ? n : 3;
-}
-function resolveStepNumber() {
-  for (const path of [
-    process.env.MUTON_STEP_PATH,
-    "/app/.step.txt"
-  ].filter((p) => Boolean(p))) {
-    try {
-      if (!existsSync(path))
-        continue;
-      const n = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
-      if (Number.isFinite(n) && n >= 1)
-        return n;
-    } catch {}
-  }
-  for (const path of [
-    process.env.MUTON_QUESTION_PATH,
-    "/app/question.md"
-  ].filter((p) => Boolean(p))) {
-    try {
-      if (!existsSync(path))
-        continue;
-      const text = readFileSync(path, "utf8");
-      const m = /Question\s+(\d+)\s+of\s+\d+/i.exec(text);
-      if (m) {
-        const n = Number.parseInt(m[1], 10);
-        if (Number.isFinite(n) && n >= 1)
-          return n;
-      }
-    } catch {}
-  }
-  return null;
-}
-function shouldRecordInitial(step) {
-  if (step == null)
-    return false;
-  return step >= 1 && step <= initialStepWindow();
-}
-function transcriptToChatLog(raw, maxChars = 40000) {
-  const text = raw.trim();
-  if (!text)
-    return "";
-  const lines = text.split(`
-`);
-  const looksJsonl = lines.some((l) => {
-    const t = l.trim();
-    return t.startsWith("{") && t.includes('"type"');
-  });
-  if (!looksJsonl) {
-    return text.length > maxChars ? text.slice(-maxChars) : text;
-  }
-  const out = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t.startsWith("{"))
-      continue;
-    let row;
-    try {
-      row = JSON.parse(t);
-    } catch {
-      continue;
-    }
-    if (row.type !== "message" || !row.message)
-      continue;
-    const role = (row.message.role ?? "unknown").toUpperCase();
-    const parts = flattenContent(row.message.content);
-    if (!parts)
-      continue;
-    out.push(`${role}:
-${parts}`);
-  }
-  const joined = out.join(`
-
-`);
-  if (!joined) {
-    return text.length > maxChars ? text.slice(-maxChars) : text;
-  }
-  return joined.length > maxChars ? joined.slice(-maxChars) : joined;
-}
-function flattenContent(content) {
-  if (typeof content === "string")
-    return content.trim();
-  if (!Array.isArray(content))
-    return "";
-  const bits = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object")
-      continue;
-    if (part.type === "text" && typeof part.text === "string") {
-      bits.push(part.text.trim());
-    } else if (part.type === "toolCall" || part.type === "tool_use") {
-      const name = part.name ?? "tool";
-      const args = typeof part.arguments === "string" ? part.arguments : JSON.stringify(part.arguments ?? {});
-      bits.push(`[tool ${name}] ${String(args).slice(0, 500)}`);
-    } else if (part.type === "toolResult" || part.type === "tool_result") {
-      const out = typeof part.output === "string" ? part.output : JSON.stringify(part.output ?? part.text ?? "");
-      bits.push(`[tool result] ${String(out).slice(0, 800)}`);
-    }
-  }
-  return bits.filter(Boolean).join(`
-`).trim();
-}
-function mergeInitialStepBody(existing, step, chatLog) {
-  const section = `## Step ${step}
-
-${chatLog.trim()}`.trim();
-  const marker = `## Step ${step}`;
-  const cur = (existing ?? "").trim();
-  if (!cur)
-    return section;
-  if (cur.includes(marker)) {
-    const re = new RegExp(`## Step ${step}\\n[\\s\\S]*?(?=\\n## Step \\d+|$)`);
-    return cur.replace(re, section).trim();
-  }
-  return `${cur}
-
-${section}`.trim();
-}
 
 // src/search/bm25.ts
 var STOPWORDS = new Set([
@@ -14178,7 +14146,7 @@ function rerank(hits, query) {
 }
 
 // src/search/rewrite.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 var BOILERPLATE = new Set([
   "formula",
   "database",
@@ -14233,8 +14201,8 @@ function resolveQuestionText(prompt) {
   ].filter((p) => Boolean(p));
   for (const path of candidates) {
     try {
-      if (existsSync2(path)) {
-        const text = readFileSync2(path, "utf8");
+      if (existsSync(path)) {
+        const text = readFileSync(path, "utf8");
         if (text.trim())
           return { text, source: "question_file" };
       }
@@ -14309,8 +14277,8 @@ function readQuestionText() {
   ].filter((p) => Boolean(p));
   for (const path of candidates) {
     try {
-      if (existsSync3(path)) {
-        const text = readFileSync3(path, "utf8").trim();
+      if (existsSync2(path)) {
+        const text = readFileSync2(path, "utf8").trim();
         if (text)
           return text;
       }
@@ -14453,7 +14421,7 @@ function formatContext(hits, maxChars) {
 }
 
 // src/store/index.ts
-import { mkdirSync, readdirSync, readFileSync as readFileSync4, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 
 // node_modules/yaml/dist/index.js
@@ -14620,6 +14588,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
   created_at UNINDEXED,
   updated_at UNINDEXED
 );
+CREATE TABLE IF NOT EXISTS card_embeddings (
+  slug TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  vector BLOB NOT NULL
+);
 `;
 
 class CardIndex {
@@ -14643,12 +14617,24 @@ class CardIndex {
     this.db.prepare(`INSERT INTO cards_fts (slug, title, use_when, body, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`).run(card.slug, card.title, card.use_when, card.body, card.created_at, card.updated_at);
   }
+  upsertEmbedding(slug, model, vector) {
+    this.db.prepare(`INSERT INTO card_embeddings (slug, model, dims, vector)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(slug) DO UPDATE SET
+           model=excluded.model,
+           dims=excluded.dims,
+           vector=excluded.vector`).run(slug, model, vector.byteLength / 4, vector);
+  }
+  listEmbeddings() {
+    return this.db.prepare(`SELECT slug, model, dims, vector FROM card_embeddings`).all();
+  }
   remove(slug) {
     this.db.prepare(`DELETE FROM cards WHERE slug = ?`).run(slug);
     this.db.prepare(`DELETE FROM cards_fts WHERE slug = ?`).run(slug);
+    this.db.prepare(`DELETE FROM card_embeddings WHERE slug = ?`).run(slug);
   }
   clear() {
-    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts;`);
+    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts; DELETE FROM card_embeddings;`);
   }
   rebuild(cards) {
     this.clear();
@@ -14734,7 +14720,7 @@ class CardStore {
     for (const file of files) {
       const slug = file.replace(/\.md$/, "");
       try {
-        const markdown = readFileSync4(join2(dir, file), "utf8");
+        const markdown = readFileSync3(join2(dir, file), "utf8");
         cards.push(parseCard(markdown, slug));
       } catch {}
     }
@@ -14742,7 +14728,7 @@ class CardStore {
   }
   read(slug) {
     try {
-      const markdown = readFileSync4(join2(cardsDir(this.home), `${slug}.md`), "utf8");
+      const markdown = readFileSync3(join2(cardsDir(this.home), `${slug}.md`), "utf8");
       return parseCard(markdown, slug);
     } catch {
       return null;
@@ -14858,6 +14844,17 @@ class CardStore {
   searchRaw(query, limit = 20) {
     return this.getIndex().search(query, limit);
   }
+  upsertEmbedding(slug, model, vector) {
+    this.getIndex().upsertEmbedding(slug, model, vector);
+  }
+  listEmbeddings() {
+    return this.getIndex().listEmbeddings();
+  }
+  async embedCard(card) {
+    await Promise.resolve();
+    const { vector, model } = await embedText(cardEmbedText(card));
+    this.upsertEmbedding(card.slug, model, vectorToBuffer(vector));
+  }
   cardCount() {
     return this.getIndex().count();
   }
@@ -14882,14 +14879,14 @@ function tokenOverlap(a, b) {
 
 // src/hooks/session-start.ts
 import { execSync } from "node:child_process";
-import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename } from "node:path";
 function loadState(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync4(p))
+    if (!existsSync3(p))
       return {};
-    return JSON.parse(readFileSync5(p, "utf8"));
+    return JSON.parse(readFileSync4(p, "utf8"));
   } catch {
     return {};
   }
@@ -14947,9 +14944,9 @@ function contextOutput(context, hookEventName) {
 function loadState2(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync5(p))
+    if (!existsSync4(p))
       return {};
-    return JSON.parse(readFileSync6(p, "utf8"));
+    return JSON.parse(readFileSync5(p, "utf8"));
   } catch {
     return {};
   }
@@ -14980,17 +14977,17 @@ function handlePromptSubmit(event, home) {
 
 // src/hooks/session-end.ts
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync as existsSync6, mkdirSync as mkdirSync2 } from "node:fs";
+import { copyFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join3 } from "node:path";
 function resolveMutonBin() {
   const entry = process.argv[1];
-  if (entry && existsSync6(entry))
+  if (entry && existsSync5(entry))
     return process.execPath;
   return "muton";
 }
 function resolveReflectArgs(transcriptCopy, cwd, host, sessionId) {
   const entry = process.argv[1];
-  const args = entry && existsSync6(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
+  const args = entry && existsSync5(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
   if (cwd)
     args.push("--cwd", cwd);
   if (host)
@@ -15003,7 +15000,7 @@ function handleSessionEnd(event, home) {
   const store = new CardStore(home);
   try {
     const src = event.transcriptPath;
-    if (!src || !existsSync6(src)) {
+    if (!src || !existsSync5(src)) {
       return { continue: true, suppressOutput: true };
     }
     const destDir = tmpDir(store.home);
@@ -15079,16 +15076,16 @@ async function cmdHook(args) {
 }
 
 // src/hosts/claude.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync3, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname, join as join4 } from "node:path";
 function installClaude() {
   const path = join4(homedir2(), ".claude", "settings.json");
   mkdirSync3(dirname(path), { recursive: true });
   let doc = {};
-  if (existsSync7(path)) {
+  if (existsSync6(path)) {
     try {
-      doc = JSON.parse(readFileSync7(path, "utf8"));
+      doc = JSON.parse(readFileSync6(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -15110,7 +15107,7 @@ function installClaude() {
 }
 
 // src/hosts/codex.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join5 } from "node:path";
 function installCodex() {
@@ -15120,9 +15117,9 @@ function installCodex() {
     description: "Codex lifecycle hooks",
     hooks: {}
   };
-  if (existsSync8(path)) {
+  if (existsSync7(path)) {
     try {
-      doc = JSON.parse(readFileSync8(path, "utf8"));
+      doc = JSON.parse(readFileSync7(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -15150,7 +15147,7 @@ function installCodex() {
 }
 
 // src/hosts/cursor.ts
-import { existsSync as existsSync9, mkdirSync as mkdirSync5, readFileSync as readFileSync9, writeFileSync as writeFileSync6 } from "node:fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname3, join as join6 } from "node:path";
 function mutonHookCmd(event) {
@@ -15163,9 +15160,9 @@ function installCursor() {
     version: 1,
     hooks: {}
   };
-  if (existsSync9(path)) {
+  if (existsSync8(path)) {
     try {
-      doc = JSON.parse(readFileSync9(path, "utf8"));
+      doc = JSON.parse(readFileSync8(path, "utf8"));
     } catch {}
   }
   doc.version = doc.version ?? 1;
@@ -29866,13 +29863,97 @@ class StdioServerTransport {
     });
   }
 }
+// src/search/vector.ts
+var DEFAULT_K2 = 5;
+var DEFAULT_MAX_CHARS2 = 12000;
+function envInt2(name, fallback) {
+  const v = process.env[name];
+  if (v === undefined || v === "")
+    return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function cardToHit2(card, score) {
+  return {
+    slug: card.slug,
+    title: card.title,
+    use_when: card.use_when,
+    body: card.body,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+    bm25: 0,
+    score
+  };
+}
+async function searchCardsVector(store, query, options = {}) {
+  const k = options.k ?? envInt2("MUTON_VECTOR_K", DEFAULT_K2);
+  const maxChars = options.maxChars ?? envInt2("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS2);
+  const minScore = options.minScore;
+  if (!query.trim() || store.cardCount() === 0 || k <= 0) {
+    return {
+      hits: [],
+      context: "",
+      rewrite: {
+        original: query,
+        rewritten: "[vector]",
+        source: "prompt"
+      },
+      channels: [
+        {
+          name: "vector",
+          query_chars: query.length,
+          query_head: query.slice(0, 120).replace(/\n/g, "\\n"),
+          n_hits: 0,
+          slugs: []
+        }
+      ]
+    };
+  }
+  const { vector: qVec } = await embedText(query);
+  const rows = store.listEmbeddings();
+  const scored = [];
+  for (const row of rows) {
+    const card = store.read(row.slug);
+    if (!card)
+      continue;
+    const v = bufferToVector(row.vector);
+    if (v.length !== qVec.length)
+      continue;
+    const score = cosineSimilarity(qVec, v);
+    if (minScore !== undefined && score < minScore)
+      continue;
+    scored.push(cardToHit2(card, score));
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const hits = scored.slice(0, k);
+  const channels = [
+    {
+      name: "vector",
+      query_chars: query.length,
+      query_head: query.slice(0, 120).replace(/\n/g, "\\n"),
+      n_hits: hits.length,
+      slugs: hits.map((h) => h.slug)
+    }
+  ];
+  return {
+    hits,
+    context: formatContext(hits, maxChars),
+    rewrite: {
+      original: query,
+      rewritten: `[vector] k=${k}`,
+      source: "prompt"
+    },
+    channels
+  };
+}
 
 // src/mcp/tools.ts
 async function startMcpServer(home) {
   const store = new CardStore(home);
   const server = new McpServer({ name: "muton", version: "0.1.0" });
+  const useVector = process.env.MUTON_VECTOR === "1" || process.env.MUTON_VECTOR === "true";
   server.tool("search", "Search durable Muton Cards in the shared hive before acting", { query: string2().describe("Search query") }, async ({ query }) => {
-    const { hits, context } = searchCards(store, query, { k: 5 });
+    const { context, hits } = useVector ? await searchCardsVector(store, query, { k: 5 }) : searchCards(store, query, { k: 5 });
     return {
       content: [
         {
@@ -29888,6 +29969,9 @@ async function startMcpServer(home) {
     body: string2()
   }, async ({ title, use_when, body }) => {
     const card = store.upsert({ title, use_when, body });
+    try {
+      await store.embedCard(card);
+    } catch {}
     return {
       content: [{ type: "text", text: `Stored card ${card.slug}` }]
     };
@@ -29907,7 +29991,7 @@ function flag(args, name) {
     return;
   return args[idx + 1];
 }
-function cmdPropose(args) {
+async function cmdPropose(args) {
   const title = flag(args, "--title");
   const useWhen = flag(args, "--use-when");
   const body = flag(args, "--body");
@@ -29918,6 +30002,12 @@ function cmdPropose(args) {
   const store = new CardStore;
   try {
     const card = store.upsert({ title, use_when: useWhen, body });
+    try {
+      await store.embedCard(card);
+    } catch (err) {
+      console.error(`Wrote ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`);
+      return;
+    }
     console.log(`Wrote ${card.slug}`);
   } finally {
     store.close();
@@ -29925,7 +30015,7 @@ function cmdPropose(args) {
 }
 
 // src/reflection/index.ts
-import { appendFileSync, readFileSync as readFileSync11 } from "node:fs";
+import { appendFileSync, readFileSync as readFileSync10 } from "node:fs";
 import { join as join9 } from "node:path";
 
 // src/reflection/complete/host-cli.ts
@@ -30116,7 +30206,7 @@ function createCompleter() {
 }
 
 // src/reflection/prompt.ts
-import { existsSync as existsSync10, readFileSync as readFileSync10 } from "node:fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
 import { join as join8 } from "node:path";
 var DEFAULT_REFLECTION_PROMPT = `You extract 0–5 durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
@@ -30146,9 +30236,9 @@ ${extra}`;
 }
 function readExtraPrompt(cwd, home) {
   for (const path of [join8(cwd, "REFLECTION.md"), join8(home, "REFLECTION.md")]) {
-    if (!existsSync10(path))
+    if (!existsSync9(path))
       continue;
-    const text = readFileSync10(path, "utf8").trim();
+    const text = readFileSync9(path, "utf8").trim();
     if (text)
       return text;
   }
@@ -30193,34 +30283,35 @@ function shouldTryResume(opts) {
     return false;
   return hostSupportsResume(opts.host ?? "auto");
 }
-function maybeRecordInitial(store, transcript) {
-  const step = resolveStepNumber();
-  if (!shouldRecordInitial(step) || step == null)
-    return false;
-  const chat = transcriptToChatLog(transcript);
-  if (!chat.trim())
-    return false;
-  const existing = store.read("initial");
-  const body = mergeInitialStepBody(existing?.body, step, chat);
-  store.upsertInitial(body);
-  log(store.home, `initial step=${step} body_chars=${body.length}`);
-  return true;
+async function embedWritten(store, cards) {
+  let n = 0;
+  for (const card of cards) {
+    try {
+      await store.embedCard(card);
+      n += 1;
+    } catch (err) {
+      log(store.home, `embed-fail slug=${card.slug} err=${err instanceof Error ? err.message : String(err)}`.slice(0, 240));
+    }
+  }
+  return n;
 }
 async function commitProposals(store, proposals) {
   const result = writeProposedCards(store, proposals);
-  log(store.home, `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length}`);
+  const embedded = await embedWritten(store, result.written);
+  log(store.home, `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`);
   return {
     written: result.written.length,
     skipped: result.skipped.length,
     merged: 0,
-    discarded: 0
+    discarded: 0,
+    embedded
   };
 }
 async function reflect(opts) {
   const store = new CardStore(opts.home);
   try {
     const system = loadReflectionPrompt({ cwd: opts.cwd, home: store.home });
-    let transcript = readFileSync11(opts.transcriptPath, "utf8");
+    let transcript = readFileSync10(opts.transcriptPath, "utf8");
     if (transcript.length > 120000) {
       transcript = transcript.slice(-120000);
     }
@@ -30228,7 +30319,6 @@ async function reflect(opts) {
       log(store.home, "path=skip wrote=0 skipped=0 empty-transcript");
       return { written: 0, skipped: 0 };
     }
-    const recordedInitial = maybeRecordInitial(store, transcript);
     const complete = opts.completer ?? createCompleter();
     const scratch = join9(store.home, "scratch");
     const resumeCwd = opts.cwd ?? scratch;
@@ -30244,8 +30334,8 @@ async function reflect(opts) {
         const parsed = extractProposalArray(raw);
         if (parsed) {
           const result = await commitProposals(store, filterProposals(parsed));
-          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped}` + (recordedInitial ? " initial=1" : ""));
-          return { ...result, initial: recordedInitial };
+          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
+          return result;
         }
         log(store.home, "path=resume-fail reason=unparsable");
       } catch (err) {
@@ -30264,8 +30354,8 @@ async function reflect(opts) {
       cwd: scratch
     });
     const result = await commitProposals(store, parseProposals(raw));
-    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped}` + (recordedInitial ? " initial=1" : ""));
-    return { ...result, initial: recordedInitial };
+    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
+    return result;
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
@@ -30300,9 +30390,6 @@ function filterProposals(parsed) {
     if (typeof o.title !== "string" || typeof o.use_when !== "string" || typeof o.body !== "string") {
       continue;
     }
-    const title = o.title.trim();
-    if (title.toLowerCase() === "initial")
-      continue;
     out.push({
       title: o.title,
       use_when: o.use_when,
@@ -30352,23 +30439,39 @@ function logLine(file, payload) {
 `);
   } catch {}
 }
-function cmdSearch(args) {
+function envFlag2(name) {
+  const v = process.env[name];
+  return v === "1" || v === "true";
+}
+async function cmdSearch(args) {
   const json = args.includes("--json");
-  const query = args.filter((a) => a !== "--json").join(" ").trim();
+  let k = 5;
+  const queryParts = [];
+  for (let i = 0;i < args.length; i++) {
+    const a = args[i];
+    if (a === "--json")
+      continue;
+    if (a === "--k" && args[i + 1]) {
+      k = Number.parseInt(args[++i], 10) || 5;
+      continue;
+    }
+    queryParts.push(a);
+  }
+  const query = queryParts.join(" ").trim();
   if (!query) {
-    console.error("Usage: muton search [--json] <query>");
+    console.error("Usage: muton search [--json] [--k N] <query>");
     process.exit(1);
   }
   const store = new CardStore;
   try {
-    const hybrid = process.env.MUTON_HYBRID === "1" || process.env.MUTON_HYBRID === "true" || process.env.MUTON_HYBRID_SEARCH === "1";
-    const result = searchCards(store, query, {
-      k: 5,
-      hybrid,
+    const vector = envFlag2("MUTON_VECTOR") || envFlag2("MUTON_VECTOR_SEARCH");
+    const result = vector ? await searchCardsVector(store, query, { k }) : searchCards(store, query, {
+      k,
+      hybrid: envFlag2("MUTON_HYBRID") || envFlag2("MUTON_HYBRID_SEARCH"),
       skipRewrite: true
     });
     logLine("search-debug.log", {
-      mode: hybrid ? "hybrid_2plus2" : "single",
+      mode: vector ? "vector" : "legacy",
       argv_chars: query.length,
       argv_sha256: createHash("sha256").update(query).digest("hex").slice(0, 16),
       argv_head: query.slice(0, 120).replace(/\n/g, "\\n"),
@@ -30378,6 +30481,7 @@ function cmdSearch(args) {
       hit_scores: result.hits.map((h) => h.score),
       context_chars: (result.context || "").length,
       card_count: store.cardCount(),
+      embedding_count: store.listEmbeddings().length,
       fts_tokens_instruction: tokenize(query),
       fts_query_instruction: toFtsQuery(query)
     });
@@ -30394,7 +30498,8 @@ function cmdSearch(args) {
           slug: h.slug,
           title: h.title,
           use_when: h.use_when,
-          score: h.score
+          score: h.score,
+          body: h.body
         })),
         context: result.context,
         query_original: query,
@@ -30409,7 +30514,7 @@ function cmdSearch(args) {
       return;
     }
     for (const h of result.hits) {
-      console.log(`- ${h.title} (${h.slug}) score=${h.score.toFixed(2)}`);
+      console.log(`- ${h.title} (${h.slug}) score=${h.score.toFixed(4)}`);
       console.log(`  use_when: ${h.use_when}`);
     }
   } finally {
@@ -30435,10 +30540,10 @@ async function main() {
       cmdInstall(rest);
       break;
     case "search":
-      cmdSearch(rest);
+      await cmdSearch(rest);
       break;
     case "propose":
-      cmdPropose(rest);
+      await cmdPropose(rest);
       break;
     case "reflect":
       await cmdReflect(rest);

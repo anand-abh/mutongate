@@ -20,7 +20,7 @@ export type SearchOptions = {
 };
 
 export type SearchChannel = {
-  name: "instruction" | "question" | "initial";
+  name: "instruction" | "question" | "initial" | "primer" | "vector";
   query_chars: number;
   query_head: string;
   n_hits: number;

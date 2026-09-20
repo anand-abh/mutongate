@@ -1,11 +1,5 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  mergeInitialStepBody,
-  resolveStepNumber,
-  shouldRecordInitial,
-  transcriptToChatLog,
-} from "../cards/initial.ts";
 import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
@@ -27,7 +21,7 @@ export type ReflectResult = {
   skipped: number;
   merged?: number;
   discarded?: number;
-  initial?: boolean;
+  embedded?: number;
 };
 
 /** Short user text for host session resume. Do not attach the transcript. */
@@ -41,38 +35,49 @@ function shouldTryResume(opts: ReflectOptions): boolean {
   return hostSupportsResume(opts.host ?? "auto");
 }
 
-/** Append this step's chat log into the fixed `initial` card when step ≤ window. */
-function maybeRecordInitial(store: CardStore, transcript: string): boolean {
-  const step = resolveStepNumber();
-  if (!shouldRecordInitial(step) || step == null) return false;
-  const chat = transcriptToChatLog(transcript);
-  if (!chat.trim()) return false;
-  const existing = store.read("initial");
-  const body = mergeInitialStepBody(existing?.body, step, chat);
-  store.upsertInitial(body);
-  log(store.home, `initial step=${step} body_chars=${body.length}`);
-  return true;
+async function embedWritten(
+  store: CardStore,
+  cards: { slug: string; title: string; use_when: string; body: string; created_at: string; updated_at: string }[],
+): Promise<number> {
+  let n = 0;
+  for (const card of cards) {
+    try {
+      await store.embedCard(card);
+      n += 1;
+    } catch (err) {
+      log(
+        store.home,
+        `embed-fail slug=${card.slug} err=${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          240,
+        ),
+      );
+    }
+  }
+  return n;
 }
 
 async function commitProposals(
   store: CardStore,
   proposals: ProposeInput[],
 ): Promise<ReflectResult> {
-  // Stock hive cards: always ungated lexical upsert (no LLM gate, no primer).
+  // Stock hive cards: always ungated lexical upsert (no LLM gate, no primer/initial).
   const result = writeProposedCards(store, proposals);
+  const embedded = await embedWritten(store, result.written);
   log(
     store.home,
-    `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length}`,
+    `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`,
   );
   return {
     written: result.written.length,
     skipped: result.skipped.length,
     merged: 0,
     discarded: 0,
+    embedded,
   };
 }
 
-/** Run silent reflection: transcript → model → Cards (ungated) + optional initial. */
+/** Run silent reflection: transcript → model → Cards (ungated) + embeddings. */
 export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
   const store = new CardStore(opts.home);
   try {
@@ -85,8 +90,6 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
       log(store.home, "path=skip wrote=0 skipped=0 empty-transcript");
       return { written: 0, skipped: 0 };
     }
-
-    const recordedInitial = maybeRecordInitial(store, transcript);
 
     const complete = opts.completer ?? createCompleter();
     const scratch = join(store.home, "scratch");
@@ -106,10 +109,9 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
           const result = await commitProposals(store, filterProposals(parsed));
           log(
             store.home,
-            `path=resume wrote=${result.written} skipped=${result.skipped}` +
-              (recordedInitial ? " initial=1" : ""),
+            `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
           );
-          return { ...result, initial: recordedInitial };
+          return result;
         }
         log(store.home, "path=resume-fail reason=unparsable");
       } catch (err) {
@@ -131,10 +133,9 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
     const result = await commitProposals(store, parseProposals(raw));
     log(
       store.home,
-      `path=fallback wrote=${result.written} skipped=${result.skipped}` +
-        (recordedInitial ? " initial=1" : ""),
+      `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
     );
-    return { ...result, initial: recordedInitial };
+    return result;
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);
     throw err;
@@ -174,9 +175,6 @@ function filterProposals(parsed: unknown[]): ProposeInput[] {
     ) {
       continue;
     }
-    const title = o.title.trim();
-    // Never let reflect overwrite the reserved initial chat-log card.
-    if (title.toLowerCase() === "initial") continue;
     out.push({
       title: o.title,
       use_when: o.use_when,

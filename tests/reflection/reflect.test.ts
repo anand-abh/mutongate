@@ -59,6 +59,8 @@ describe("parseProposals", () => {
 });
 
 describe("reflect", () => {
+  const prevEmbed = process.env.MUTON_EMBED_MOCK;
+  process.env.MUTON_EMBED_MOCK = "1";
   test("writes cards via mocked completer", async () => {
     const root = mkdtempSync(join(tmpdir(), "muton-reflect-"));
     const transcript = join(root, "t.txt");

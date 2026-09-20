@@ -221,6 +221,24 @@ export class CardStore {
     return this.getIndex().search(query, limit);
   }
 
+  /** Persist embedding for a card (vector hive). */
+  upsertEmbedding(slug: string, model: string, vector: Buffer): void {
+    this.getIndex().upsertEmbedding(slug, model, vector);
+  }
+
+  listEmbeddings() {
+    return this.getIndex().listEmbeddings();
+  }
+
+  /** Embed and store vector for one card. Best-effort; throws on API failure. */
+  async embedCard(card: Card): Promise<void> {
+    const { embedText, cardEmbedText, vectorToBuffer } = await import(
+      "../search/embed.ts"
+    );
+    const { vector, model } = await embedText(cardEmbedText(card));
+    this.upsertEmbedding(card.slug, model, vectorToBuffer(vector));
+  }
+
   cardCount(): number {
     return this.getIndex().count();
   }

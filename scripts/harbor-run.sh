@@ -105,10 +105,12 @@ CMD=(
   --ae "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
   --ae "MUTON_MODEL=${MODEL}"
   --ae "MUTON_API_KEY=${OPENAI_API_KEY:-}"
-  --ae "MUTON_HYBRID=1"
+  --ae "MUTON_HYBRID=0"
+  --ae "MUTON_VECTOR=1"
+  --ae "MUTON_MAX_SEARCHES=10"
   --ae "MUTON_HYBRID_K_INSTRUCTION=${K_INST}"
   --ae "MUTON_HYBRID_K_QUESTION=${K_Q}"
-  --ae "MUTON_CARD_GATE=${CARD_GATE}"
+  --ae "MUTON_CARD_GATE=0"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -125,7 +127,7 @@ echo "  task:  ${TASK}"
 echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
-echo "  hybrid: ${K_INST}+${K_Q}  card_gate: ${CARD_GATE}  (cold hive each run)"
+echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'

@@ -1,6 +1,6 @@
 # mutongate
 
-Private Muton fork: **hybrid Card search** (n+m+initial pin) + **stock reflect** (0–5 ungated) + **initial chat-log card** from the first three steps.
+Private Muton fork: **vector card hive** + **agentic `muton_search` tool** (no auto-inject) + **stock ungated reflect**.
 
 Version: `0.2.1-qr3-cardgate`
 
@@ -29,8 +29,10 @@ echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
 | `MUTON_HYBRID=1` | Dual FTS (instruction + question) |
 | `MUTON_HYBRID_K_INSTRUCTION` | Instruction-channel k (e.g. `3`) |
 | `MUTON_HYBRID_K_QUESTION` | Question-channel k (e.g. `3`) |
+| `MUTON_VECTOR=1` | Semantic search over card embeddings (agent tool path) |
+| `MUTON_MAX_SEARCHES` | Per-step `muton_search` budget (default 10) |
+| `MUTON_EMBED_MODEL` | Embedding model (default `text-embedding-3-small`) |
 | `MUTON_CARD_GATE` | Legacy; unused on reflect path (always ungated). |
-| `MUTON_INITIAL_STEPS` | Steps that append into slug `initial` (default `3`). |
 | `MUTON_MODEL` / `MUTON_API_KEY` | Model for reflect + gate |
 | `OPENAI_API_KEY` | Passed through to the agent |
 
