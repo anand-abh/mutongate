@@ -9,13 +9,13 @@ Muton is a shared hive of durable **Cards** (facts) for coding agents.
 
 ## When to search
 
-Before unfamiliar API work, tricky config, or after an error you have not solved yet:
+Before unfamiliar schema/API work, call the `muton_search` tool (Harbor Pi) or:
 
 ```bash
-muton search "stripe rate limit"
+MUTON_VECTOR=1 muton search "qualifying q1 null encoding"
 ```
 
-Or call the MCP tool `search`.
+Prefer searching for schema/joins first, then question-specific facts (up to 10 searches per step). **Minimize `db query` calls.** If hive cards already give the needed schema/joins, do not re-inspect with `sqlite_master` / `PRAGMA`.
 
 ## When to propose
 

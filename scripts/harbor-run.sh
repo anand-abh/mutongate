@@ -4,8 +4,8 @@
 #   <bench>/tasks/database-analytics        (full 174)
 #
 # Usage:
-#   ./scripts/harbor-run.sh <k_instruction> <k_question> <task_path> [job_name]
-#   ./scripts/harbor-run.sh 3 3 "$BENCH/.alb/smoke/database-analytics" --dry-run
+#   ./scripts/harbor-run.sh <task_path> [job_name]
+#   ./scripts/harbor-run.sh "$BENCH/.alb/smoke/database-analytics" --dry-run
 set -euo pipefail
 export PATH="${HOME}/.bun/bin:${HOME}/.local/bin:${PATH}"
 
@@ -55,17 +55,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ${#POSITIONAL[@]} -lt 3 ]]; then
+if [[ ${#POSITIONAL[@]} -lt 1 ]]; then
   usage >&2
   exit 2
 fi
 
-K_INST="${POSITIONAL[0]}"
-K_Q="${POSITIONAL[1]}"
-TASK="${POSITIONAL[2]}"
+TASK="${POSITIONAL[0]}"
 JOB_NAME="mutongate-database-analytics"
-if [[ ${#POSITIONAL[@]} -ge 4 ]]; then
-  JOB_NAME="${POSITIONAL[3]}"
+if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
+  JOB_NAME="${POSITIONAL[1]}"
 fi
 
 if [[ ! -d "$TASK" ]]; then
@@ -104,10 +102,8 @@ CMD=(
   --ae "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
   --ae "MUTON_MODEL=${MODEL}"
   --ae "MUTON_API_KEY=${OPENAI_API_KEY:-}"
-  --ae "MUTON_HYBRID=1"
-  --ae "MUTON_HYBRID_K_INSTRUCTION=${K_INST}"
-  --ae "MUTON_HYBRID_K_QUESTION=${K_Q}"
-  --ae "MUTON_CARD_GATE=1"
+  --ae "MUTON_VECTOR=1"
+  --ae "MUTON_MAX_SEARCHES=10"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -124,6 +120,7 @@ echo "  task:  ${TASK}"
 echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
+echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'

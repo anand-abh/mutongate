@@ -1,6 +1,6 @@
 # Database analytics (10 / 40 / 174)
 
-Mutongate runs Harbor `pi` with hybrid search + stock reflect + card gate. It is **not** an `alb --system` entry. Use the scripts in this repo against a local [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench) clone.
+Mutongate runs Harbor `pi` with a **vector card hive** and agentic `muton_search` (no auto-inject), plus **stock ungated reflect**. It is **not** an `alb --system` entry. Use the scripts in this repo against a local [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench) clone.
 
 Sizes (BIRD-SQL `formula_1`, 174 questions):
 
@@ -33,7 +33,7 @@ export OPENAI_API_KEY=…
 
 ## Run
 
-From the mutongate root (hybrid k defaults to 3+3):
+From the mutongate root:
 
 ```bash
 ./scripts/run-database-analytics.sh 10          # smoke
@@ -51,8 +51,8 @@ Equivalent alb slice + low-level wrapper (same mounts/env as the size runner):
 alb prepare database-analytics --n 10
 alb prepare database-analytics --n 40
 
-./scripts/harbor-run.sh 3 3 "$AGENT_LEARNING_BENCH/.alb/smoke/database-analytics"
-./scripts/harbor-run.sh 3 3 "$AGENT_LEARNING_BENCH/tasks/database-analytics" mutongate-database-analytics-n174
+./scripts/harbor-run.sh "$AGENT_LEARNING_BENCH/.alb/smoke/database-analytics"
+./scripts/harbor-run.sh "$AGENT_LEARNING_BENCH/tasks/database-analytics" mutongate-database-analytics-n174
 ```
 
 `scripts/run-smoke.sh` is a compatibility alias for `harbor-run.sh`.
@@ -67,7 +67,7 @@ Do not fork the bench. If you want `alb smoke database-analytics --system mutong
 
 ```toml
 [systems.mutongate]
-summary = "Harbor pi plus mutongate hybrid search and LLM card gate. Prefer mutongate ./scripts/run-database-analytics.sh."
+summary = "Harbor pi plus mutongate vector hive and muton_search. Prefer mutongate ./scripts/run-database-analytics.sh."
 agent = "pi"
 ```
 

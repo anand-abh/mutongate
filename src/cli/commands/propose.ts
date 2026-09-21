@@ -6,7 +6,7 @@ function flag(args: string[], name: string): string | undefined {
   return args[idx + 1];
 }
 
-export function cmdPropose(args: string[]): void {
+export async function cmdPropose(args: string[]): Promise<void> {
   const title = flag(args, "--title");
   const useWhen = flag(args, "--use-when");
   const body = flag(args, "--body");
@@ -17,6 +17,14 @@ export function cmdPropose(args: string[]): void {
   const store = new CardStore();
   try {
     const card = store.upsert({ title, use_when: useWhen, body });
+    try {
+      await store.embedCard(card);
+    } catch (err) {
+      console.error(
+        `Wrote ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`,
+      );
+      return;
+    }
     console.log(`Wrote ${card.slug}`);
   } finally {
     store.close();

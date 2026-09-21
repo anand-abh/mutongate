@@ -6,7 +6,7 @@ export type WriteResult = {
   skipped: string[];
 };
 
-/** Upsert proposals; skip only invalid rows. Near-duplicates update in place. */
+/** Upsert general proposals (title / use_when / body required). */
 export function writeProposedCards(store: CardStore, proposals: ProposeInput[]): WriteResult {
   const written: Card[] = [];
   const skipped: string[] = [];

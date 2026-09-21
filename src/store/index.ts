@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { type Card, parseCard, serializeCard, slugify } from "../cards/index.ts";
 import { cardsDir, indexPath, logsDir, mutonHome, scratchDir, tmpDir } from "./fs.ts";
 import { CardIndex, type FtsHit } from "./sqlite.ts";
-
 const MERGE_SEARCH_K = 5;
 const TITLE_OVERLAP = 0.8;
 const CONTENT_OVERLAP = 0.5;
@@ -170,6 +169,24 @@ export class CardStore {
 
   searchRaw(query: string, limit = 20) {
     return this.getIndex().search(query, limit);
+  }
+
+  /** Persist embedding for a card (vector hive). */
+  upsertEmbedding(slug: string, model: string, vector: Buffer): void {
+    this.getIndex().upsertEmbedding(slug, model, vector);
+  }
+
+  listEmbeddings() {
+    return this.getIndex().listEmbeddings();
+  }
+
+  /** Embed and store vector for one card. Best-effort; throws on API failure. */
+  async embedCard(card: Card): Promise<void> {
+    const { embedText, cardEmbedText, vectorToBuffer } = await import(
+      "../search/embed.ts"
+    );
+    const { vector, model } = await embedText(cardEmbedText(card));
+    this.upsertEmbedding(card.slug, model, vectorToBuffer(vector));
   }
 
   cardCount(): number {

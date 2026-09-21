@@ -24,10 +24,10 @@ async function main(): Promise<void> {
       cmdInstall(rest);
       break;
     case "search":
-      cmdSearch(rest);
+      await cmdSearch(rest);
       break;
     case "propose":
-      cmdPropose(rest);
+      await cmdPropose(rest);
       break;
     case "reflect":
       await cmdReflect(rest);

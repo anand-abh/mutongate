@@ -59,6 +59,8 @@ describe("parseProposals", () => {
 });
 
 describe("reflect", () => {
+  const prevEmbed = process.env.MUTON_EMBED_MOCK;
+  process.env.MUTON_EMBED_MOCK = "1";
   test("writes cards via mocked completer", async () => {
     const root = mkdtempSync(join(tmpdir(), "muton-reflect-"));
     const transcript = join(root, "t.txt");
@@ -105,7 +107,7 @@ describe("reflect", () => {
     }
   });
 
-  test("updates an existing card instead of writing a second copy", async () => {
+  test("general cards upsert ungated (lexical near-dup merge)", async () => {
     const root = mkdtempSync(join(tmpdir(), "muton-reflect-"));
     const transcript = join(root, "t.txt");
     writeFileSync(
@@ -120,43 +122,26 @@ describe("reflect", () => {
     });
     store.close();
     try {
-      // Gate on by default: 1st call = reflect proposals, 2nd = gate merge
-      process.env.MUTON_CARD_GATE = "1";
       let calls = 0;
       const result = await reflect({
         transcriptPath: transcript,
         home: root,
         completer: async (req) => {
           calls += 1;
-          if (calls === 1) {
-            expect(req.user).toBe(
-              "Stripe still returns 200 with an error body; parse the error field.",
-            );
-            return JSON.stringify([
-              {
-                title: "Stripe 200 error body",
-                use_when: "Handling Stripe HTTP",
-                body: "Read JSON error even when status is 200. Parse the error field.",
-              },
-            ]);
-          }
-          expect(req.system).toContain("merge");
-          expect(req.user).toContain("## Proposed card");
-          expect(req.user).toContain("stripe-rate-limit-returns-200");
-          return JSON.stringify({
-            action: "merge",
-            closest_slug: "stripe-rate-limit-returns-200",
-            reason: "same Stripe 200-error fact with more detail",
-            card: {
+          expect(req.user).toBe(
+            "Stripe still returns 200 with an error body; parse the error field.",
+          );
+          return JSON.stringify([
+            {
               title: "Stripe 200 error body",
               use_when: "Handling Stripe HTTP",
               body: "Read JSON error even when status is 200. Parse the error field.",
             },
-          });
+          ]);
         },
       });
-      expect(result.written).toBe(0);
-      expect(result.merged).toBe(1);
+      expect(calls).toBe(1);
+      expect(result.written).toBe(1);
       expect(result.skipped).toBe(0);
       const after = new CardStore(root);
       try {
@@ -166,7 +151,6 @@ describe("reflect", () => {
         after.close();
       }
     } finally {
-      delete process.env.MUTON_CARD_GATE;
       rmSync(root, { recursive: true, force: true });
     }
   });

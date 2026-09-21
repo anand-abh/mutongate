@@ -6978,6 +6978,98 @@ var require_public_api = __commonJS(function(exports) {
   exports.stringify = stringify;
 });
 
+// src/search/embed.ts
+function embedModel() {
+  return (process.env.MUTON_EMBED_MODEL ?? DEFAULT_EMBED_MODEL).trim() || DEFAULT_EMBED_MODEL;
+}
+function apiKey() {
+  return process.env.MUTON_API_KEY || process.env.OPENAI_API_KEY || undefined;
+}
+function apiBase() {
+  return (process.env.MUTON_API_BASE ?? "https://api.openai.com/v1").replace(/\/$/, "");
+}
+function mockEmbed(text, dims = 32) {
+  const out = new Float32Array(dims);
+  const tokens = text.toLowerCase().split(/\W+/).filter(Boolean);
+  for (const tok of tokens) {
+    let h = 0;
+    for (let i = 0;i < tok.length; i++)
+      h = h * 31 + tok.charCodeAt(i) >>> 0;
+    out[h % dims] += 1;
+  }
+  return l2Normalize(out);
+}
+function l2Normalize(v) {
+  let sum = 0;
+  for (let i = 0;i < v.length; i++)
+    sum += v[i] * v[i];
+  const n = Math.sqrt(sum);
+  if (n === 0)
+    return v;
+  const out = new Float32Array(v.length);
+  for (let i = 0;i < v.length; i++)
+    out[i] = v[i] / n;
+  return out;
+}
+function cosineSimilarity(a, b) {
+  const n = Math.min(a.length, b.length);
+  let dot = 0;
+  for (let i = 0;i < n; i++)
+    dot += a[i] * b[i];
+  return dot;
+}
+function cardEmbedText(card) {
+  return `${card.title}
+Use when: ${card.use_when}
+${card.body}`.trim();
+}
+async function embedText(text) {
+  const model = embedModel();
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return { vector: mockEmbed("", 32), model: "mock-empty" };
+  }
+  if (process.env.MUTON_EMBED_MOCK === "1" || process.env.MUTON_EMBED_MOCK === "true") {
+    return { vector: mockEmbed(trimmed), model: "mock" };
+  }
+  const key = apiKey();
+  if (!key) {
+    throw new Error("MUTON_API_KEY or OPENAI_API_KEY required for embeddings");
+  }
+  const res = await fetch(`${apiBase()}/embeddings`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model,
+      input: trimmed.slice(0, 30000)
+    })
+  });
+  if (!res.ok) {
+    throw new Error(`Embeddings HTTP ${res.status}: ${await res.text()}`);
+  }
+  const data = await res.json();
+  const raw = data.data?.[0]?.embedding;
+  if (!raw?.length)
+    throw new Error("Embeddings response missing vector");
+  return {
+    vector: l2Normalize(Float32Array.from(raw)),
+    model: data.model ?? model
+  };
+}
+function vectorToBuffer(v) {
+  return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
+}
+function bufferToVector(buf) {
+  const copy = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+  const aligned = new ArrayBuffer(copy.byteLength);
+  new Uint8Array(aligned).set(copy);
+  return new Float32Array(aligned);
+}
+var DEFAULT_EMBED_MODEL = "text-embedding-3-small";
+
 // node_modules/ajv/dist/compile/codegen/code.js
 var require_code = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
@@ -13907,10 +13999,7 @@ function normalizeHookInput(eventName, rawInput, hostHint) {
 }
 
 // src/hooks/prompt-submit.ts
-import { existsSync as existsSync4, readFileSync as readFileSync5, writeFileSync as writeFileSync3 } from "node:fs";
-
-// src/search/index.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 
 // src/search/bm25.ts
 var STOPWORDS = new Set([
@@ -14159,9 +14248,7 @@ function rewriteSearchQuery(prompt) {
 
 // src/search/index.ts
 var DEFAULT_K = 5;
-var DEFAULT_MAX_CHARS = 6000;
-var DEFAULT_K_INSTRUCTION = 3;
-var DEFAULT_K_QUESTION = 3;
+var DEFAULT_MAX_CHARS = 1e5;
 function envFlag(name) {
   const v = process.env[name];
   return v === "1" || v === "true";
@@ -14173,22 +14260,6 @@ function envInt(name, fallback) {
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
-function readQuestionText() {
-  const candidates = [
-    process.env.MUTON_QUESTION_PATH,
-    "/app/question.md"
-  ].filter((p) => Boolean(p));
-  for (const path of candidates) {
-    try {
-      if (existsSync2(path)) {
-        const text = readFileSync2(path, "utf8").trim();
-        if (text)
-          return text;
-      }
-    } catch {}
-  }
-  return null;
-}
 function rankQuery(store, query, k, exclude, minScore) {
   if (!query.trim() || store.cardCount() === 0 || k <= 0)
     return [];
@@ -14199,62 +14270,10 @@ function rankQuery(store, query, k, exclude, minScore) {
   }
   return ranked.slice(0, k);
 }
-function searchCardsHybrid(store, instruction, options = {}) {
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const kInst = options.kInstruction ?? envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
-  const kQ = options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
-  const exclude = options.excludeSlugs ?? new Set;
-  const channels = [];
-  const instHits = rankQuery(store, instruction, kInst, exclude, options.minScore);
-  channels.push({
-    name: "instruction",
-    query_chars: instruction.length,
-    query_head: instruction.slice(0, 120).replace(/\n/g, "\\n"),
-    n_hits: instHits.length,
-    slugs: instHits.map((h) => h.slug)
-  });
-  const taken = new Set([...exclude, ...instHits.map((h) => h.slug)]);
-  const question = readQuestionText();
-  let qHits = [];
-  if (question) {
-    qHits = rankQuery(store, question, kQ, taken, options.minScore);
-    channels.push({
-      name: "question",
-      query_chars: question.length,
-      query_head: question.slice(0, 120).replace(/\n/g, "\\n"),
-      n_hits: qHits.length,
-      slugs: qHits.map((h) => h.slug)
-    });
-  } else {
-    channels.push({
-      name: "question",
-      query_chars: 0,
-      query_head: "",
-      n_hits: 0,
-      slugs: []
-    });
-  }
-  const hits = [...instHits, ...qHits];
-  const context = formatContext(hits, maxChars);
-  return {
-    hits,
-    context,
-    rewrite: {
-      original: instruction,
-      rewritten: question ? `[hybrid] instruction[${kInst}]+question[${kQ}]` : `[hybrid] instruction[${kInst}] only`,
-      source: question ? "question_file" : "prompt"
-    },
-    channels
-  };
-}
 function searchCards(store, query, options = {}) {
-  const hybrid = options.hybrid || envFlag("MUTON_HYBRID") || envFlag("MUTON_HYBRID_SEARCH");
-  if (hybrid) {
-    return searchCardsHybrid(store, query, options);
-  }
   const k = options.k ?? DEFAULT_K;
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const exclude = options.excludeSlugs ?? new Set;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
+  const exclude = new Set(options.excludeSlugs ?? []);
   const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
   const rewrite = skipRewrite ? {
     original: query,
@@ -14265,9 +14284,22 @@ function searchCards(store, query, options = {}) {
   if (!effective.trim() || store.cardCount() === 0) {
     return { hits: [], context: "", rewrite };
   }
-  const ranked = rankQuery(store, effective, k, exclude, options.minScore);
-  const context = formatContext(ranked, maxChars);
-  return { hits: ranked, context, rewrite };
+  const hits = rankQuery(store, effective, k, exclude, options.minScore);
+  const context = formatContext(hits, maxChars);
+  return {
+    hits,
+    context,
+    rewrite,
+    channels: [
+      {
+        name: "fts",
+        query_chars: effective.length,
+        query_head: effective.slice(0, 120).replace(/\n/g, "\\n"),
+        n_hits: hits.length,
+        slugs: hits.map((h) => h.slug)
+      }
+    ]
+  };
 }
 function formatContext(hits, maxChars) {
   if (hits.length === 0)
@@ -14289,7 +14321,7 @@ function formatContext(hits, maxChars) {
 }
 
 // src/store/index.ts
-import { mkdirSync, readdirSync, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 
 // node_modules/yaml/dist/index.js
@@ -14438,6 +14470,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
   created_at UNINDEXED,
   updated_at UNINDEXED
 );
+CREATE TABLE IF NOT EXISTS card_embeddings (
+  slug TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  vector BLOB NOT NULL
+);
 `;
 
 class CardIndex {
@@ -14461,12 +14499,24 @@ class CardIndex {
     this.db.prepare(`INSERT INTO cards_fts (slug, title, use_when, body, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`).run(card.slug, card.title, card.use_when, card.body, card.created_at, card.updated_at);
   }
+  upsertEmbedding(slug, model, vector) {
+    this.db.prepare(`INSERT INTO card_embeddings (slug, model, dims, vector)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(slug) DO UPDATE SET
+           model=excluded.model,
+           dims=excluded.dims,
+           vector=excluded.vector`).run(slug, model, vector.byteLength / 4, vector);
+  }
+  listEmbeddings() {
+    return this.db.prepare(`SELECT slug, model, dims, vector FROM card_embeddings`).all();
+  }
   remove(slug) {
     this.db.prepare(`DELETE FROM cards WHERE slug = ?`).run(slug);
     this.db.prepare(`DELETE FROM cards_fts WHERE slug = ?`).run(slug);
+    this.db.prepare(`DELETE FROM card_embeddings WHERE slug = ?`).run(slug);
   }
   clear() {
-    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts;`);
+    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts; DELETE FROM card_embeddings;`);
   }
   rebuild(cards) {
     this.clear();
@@ -14552,7 +14602,7 @@ class CardStore {
     for (const file of files) {
       const slug = file.replace(/\.md$/, "");
       try {
-        const markdown = readFileSync3(join2(dir, file), "utf8");
+        const markdown = readFileSync2(join2(dir, file), "utf8");
         cards.push(parseCard(markdown, slug));
       } catch {}
     }
@@ -14560,7 +14610,7 @@ class CardStore {
   }
   read(slug) {
     try {
-      const markdown = readFileSync3(join2(cardsDir(this.home), `${slug}.md`), "utf8");
+      const markdown = readFileSync2(join2(cardsDir(this.home), `${slug}.md`), "utf8");
       return parseCard(markdown, slug);
     } catch {
       return null;
@@ -14646,6 +14696,17 @@ class CardStore {
   searchRaw(query, limit = 20) {
     return this.getIndex().search(query, limit);
   }
+  upsertEmbedding(slug, model, vector) {
+    this.getIndex().upsertEmbedding(slug, model, vector);
+  }
+  listEmbeddings() {
+    return this.getIndex().listEmbeddings();
+  }
+  async embedCard(card) {
+    await Promise.resolve();
+    const { vector, model } = await embedText(cardEmbedText(card));
+    this.upsertEmbedding(card.slug, model, vectorToBuffer(vector));
+  }
   cardCount() {
     return this.getIndex().count();
   }
@@ -14670,14 +14731,14 @@ function tokenOverlap(a, b) {
 
 // src/hooks/session-start.ts
 import { execSync } from "node:child_process";
-import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename } from "node:path";
 function loadState(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync3(p))
+    if (!existsSync2(p))
       return {};
-    return JSON.parse(readFileSync4(p, "utf8"));
+    return JSON.parse(readFileSync3(p, "utf8"));
   } catch {
     return {};
   }
@@ -14735,9 +14796,9 @@ function contextOutput(context, hookEventName) {
 function loadState2(home) {
   try {
     const p = sessionStatePath(home);
-    if (!existsSync4(p))
+    if (!existsSync3(p))
       return {};
-    return JSON.parse(readFileSync5(p, "utf8"));
+    return JSON.parse(readFileSync4(p, "utf8"));
   } catch {
     return {};
   }
@@ -14768,17 +14829,17 @@ function handlePromptSubmit(event, home) {
 
 // src/hooks/session-end.ts
 import { spawn } from "node:child_process";
-import { copyFileSync, existsSync as existsSync5, mkdirSync as mkdirSync2 } from "node:fs";
+import { copyFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "node:fs";
 import { join as join3 } from "node:path";
 function resolveMutonBin() {
   const entry = process.argv[1];
-  if (entry && existsSync5(entry))
+  if (entry && existsSync4(entry))
     return process.execPath;
   return "muton";
 }
 function resolveReflectArgs(transcriptCopy, cwd, host, sessionId) {
   const entry = process.argv[1];
-  const args = entry && existsSync5(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
+  const args = entry && existsSync4(entry) ? [entry, "reflect", "--transcript", transcriptCopy] : ["reflect", "--transcript", transcriptCopy];
   if (cwd)
     args.push("--cwd", cwd);
   if (host)
@@ -14791,7 +14852,7 @@ function handleSessionEnd(event, home) {
   const store = new CardStore(home);
   try {
     const src = event.transcriptPath;
-    if (!src || !existsSync5(src)) {
+    if (!src || !existsSync4(src)) {
       return { continue: true, suppressOutput: true };
     }
     const destDir = tmpDir(store.home);
@@ -14867,16 +14928,16 @@ async function cmdHook(args) {
 }
 
 // src/hosts/claude.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { dirname, join as join4 } from "node:path";
 function installClaude() {
   const path = join4(homedir2(), ".claude", "settings.json");
   mkdirSync3(dirname(path), { recursive: true });
   let doc = {};
-  if (existsSync6(path)) {
+  if (existsSync5(path)) {
     try {
-      doc = JSON.parse(readFileSync6(path, "utf8"));
+      doc = JSON.parse(readFileSync5(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -14898,7 +14959,7 @@ function installClaude() {
 }
 
 // src/hosts/codex.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join5 } from "node:path";
 function installCodex() {
@@ -14908,9 +14969,9 @@ function installCodex() {
     description: "Codex lifecycle hooks",
     hooks: {}
   };
-  if (existsSync7(path)) {
+  if (existsSync6(path)) {
     try {
-      doc = JSON.parse(readFileSync7(path, "utf8"));
+      doc = JSON.parse(readFileSync6(path, "utf8"));
     } catch {}
   }
   doc.hooks = doc.hooks ?? {};
@@ -14938,7 +14999,7 @@ function installCodex() {
 }
 
 // src/hosts/cursor.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync5, readFileSync as readFileSync8, writeFileSync as writeFileSync6 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { dirname as dirname3, join as join6 } from "node:path";
 function mutonHookCmd(event) {
@@ -14951,9 +15012,9 @@ function installCursor() {
     version: 1,
     hooks: {}
   };
-  if (existsSync8(path)) {
+  if (existsSync7(path)) {
     try {
-      doc = JSON.parse(readFileSync8(path, "utf8"));
+      doc = JSON.parse(readFileSync7(path, "utf8"));
     } catch {}
   }
   doc.version = doc.version ?? 1;
@@ -29654,13 +29715,97 @@ class StdioServerTransport {
     });
   }
 }
+// src/search/vector.ts
+var DEFAULT_K2 = 5;
+var DEFAULT_MAX_CHARS2 = 12000;
+function envInt2(name, fallback) {
+  const v = process.env[name];
+  if (v === undefined || v === "")
+    return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function cardToHit(card, score) {
+  return {
+    slug: card.slug,
+    title: card.title,
+    use_when: card.use_when,
+    body: card.body,
+    created_at: card.created_at,
+    updated_at: card.updated_at,
+    bm25: 0,
+    score
+  };
+}
+async function searchCardsVector(store, query, options = {}) {
+  const k = options.k ?? envInt2("MUTON_VECTOR_K", DEFAULT_K2);
+  const maxChars = options.maxChars ?? envInt2("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS2);
+  const minScore = options.minScore;
+  if (!query.trim() || store.cardCount() === 0 || k <= 0) {
+    return {
+      hits: [],
+      context: "",
+      rewrite: {
+        original: query,
+        rewritten: "[vector]",
+        source: "prompt"
+      },
+      channels: [
+        {
+          name: "vector",
+          query_chars: query.length,
+          query_head: query.slice(0, 120).replace(/\n/g, "\\n"),
+          n_hits: 0,
+          slugs: []
+        }
+      ]
+    };
+  }
+  const { vector: qVec } = await embedText(query);
+  const rows = store.listEmbeddings();
+  const scored = [];
+  for (const row of rows) {
+    const card = store.read(row.slug);
+    if (!card)
+      continue;
+    const v = bufferToVector(row.vector);
+    if (v.length !== qVec.length)
+      continue;
+    const score = cosineSimilarity(qVec, v);
+    if (minScore !== undefined && score < minScore)
+      continue;
+    scored.push(cardToHit(card, score));
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const hits = scored.slice(0, k);
+  const channels = [
+    {
+      name: "vector",
+      query_chars: query.length,
+      query_head: query.slice(0, 120).replace(/\n/g, "\\n"),
+      n_hits: hits.length,
+      slugs: hits.map((h) => h.slug)
+    }
+  ];
+  return {
+    hits,
+    context: formatContext(hits, maxChars),
+    rewrite: {
+      original: query,
+      rewritten: `[vector] k=${k}`,
+      source: "prompt"
+    },
+    channels
+  };
+}
 
 // src/mcp/tools.ts
 async function startMcpServer(home) {
   const store = new CardStore(home);
   const server = new McpServer({ name: "muton", version: "0.1.0" });
+  const useVector = process.env.MUTON_VECTOR === "1" || process.env.MUTON_VECTOR === "true";
   server.tool("search", "Search durable Muton Cards in the shared hive before acting", { query: string2().describe("Search query") }, async ({ query }) => {
-    const { hits, context } = searchCards(store, query, { k: 5 });
+    const { context, hits } = useVector ? await searchCardsVector(store, query, { k: 5 }) : searchCards(store, query, { k: 5 });
     return {
       content: [
         {
@@ -29676,6 +29821,9 @@ async function startMcpServer(home) {
     body: string2()
   }, async ({ title, use_when, body }) => {
     const card = store.upsert({ title, use_when, body });
+    try {
+      await store.embedCard(card);
+    } catch {}
     return {
       content: [{ type: "text", text: `Stored card ${card.slug}` }]
     };
@@ -29695,7 +29843,7 @@ function flag(args, name) {
     return;
   return args[idx + 1];
 }
-function cmdPropose(args) {
+async function cmdPropose(args) {
   const title = flag(args, "--title");
   const useWhen = flag(args, "--use-when");
   const body = flag(args, "--body");
@@ -29706,6 +29854,12 @@ function cmdPropose(args) {
   const store = new CardStore;
   try {
     const card = store.upsert({ title, use_when: useWhen, body });
+    try {
+      await store.embedCard(card);
+    } catch (err) {
+      console.error(`Wrote ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`);
+      return;
+    }
     console.log(`Wrote ${card.slug}`);
   } finally {
     store.close();
@@ -29713,8 +29867,8 @@ function cmdPropose(args) {
 }
 
 // src/reflection/index.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync10 } from "node:fs";
-import { join as join10 } from "node:path";
+import { appendFileSync, readFileSync as readFileSync9 } from "node:fs";
+import { join as join9 } from "node:path";
 
 // src/reflection/complete/host-cli.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -29903,229 +30057,9 @@ function createCompleter() {
   };
 }
 
-// src/reflection/gate.ts
-import { appendFileSync } from "node:fs";
-import { join as join8 } from "node:path";
-var DEFAULT_GATE_PROMPT = `You maintain a shared hive of durable knowledge cards (Muton).
-
-You are given ONE proposed card and the FULL current hive catalog. Your job:
-1. Identify the single closest existing card (by topic / kind of knowledge — not loose keyword overlap).
-2. Choose exactly one action:
-   - merge — same kind of fact; the proposal adds or corrects information. Return a unified card that unions durable content into the closest card.
-   - discard — the proposal adds nothing durable beyond the closest card, OR it is only a one-off answer/result with no reusable pattern.
-   - create — the proposal has durable new information, but it is a different kind of fact than the closest card; merging would muddle topics.
-
-If the hive is empty or nothing is meaningfully similar, choose create.
-Prefer keeping schema/DB/tooling/join/encoding facts. Prefer discarding pure answer keys (a single race winner, time, count) when they add no reusable lookup pattern.
-
-Return ONLY JSON (no markdown fences, no commentary):
-{
-  "action": "create" | "merge" | "discard",
-  "closest_slug": "existing-slug-or-null",
-  "reason": "one short sentence",
-  "card": { "title": "...", "use_when": "...", "body": "..." }
-}
-
-Rules for the JSON:
-- discard: card may be null.
-- create: card is the (optionally cleaned) proposal; set closest_slug if you considered one.
-- merge: closest_slug is REQUIRED and must be an existing slug; card is the full replacement fields for that slug (union of old + new durable facts).`;
-function cardGateEnabled() {
-  const v = (process.env.MUTON_CARD_GATE ?? "1").trim().toLowerCase();
-  return !(v === "0" || v === "false" || v === "off" || v === "no");
-}
-function formatHiveCatalog(cards) {
-  if (cards.length === 0)
-    return "(empty hive)";
-  return cards.map((c) => `### slug: ${c.slug}
-title: ${c.title}
-use_when: ${c.use_when}
-body: ${c.body}`).join(`
-
-`);
-}
-function formatGateUserMessage(proposal, cards) {
-  return `## Proposed card
-title: ${proposal.title}
-use_when: ${proposal.use_when}
-body: ${proposal.body}
-
-## Hive catalog (${cards.length} cards)
-${formatHiveCatalog(cards)}`;
-}
-function parseGateDecision(raw) {
-  const text = raw.trim();
-  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const jsonText = fence?.[1]?.trim() ?? text;
-  const start = jsonText.indexOf("{");
-  const end = jsonText.lastIndexOf("}");
-  if (start < 0 || end < 0 || end <= start)
-    return null;
-  try {
-    const parsed = JSON.parse(jsonText.slice(start, end + 1));
-    const action = parsed.action;
-    if (action !== "create" && action !== "merge" && action !== "discard")
-      return null;
-    const closest = parsed.closest_slug === null || parsed.closest_slug === undefined ? null : typeof parsed.closest_slug === "string" ? parsed.closest_slug.trim() || null : null;
-    const reason = typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "(no reason)";
-    let card = null;
-    const c = parsed.card;
-    if (c && typeof c === "object" && !Array.isArray(c)) {
-      const o = c;
-      if (typeof o.title === "string" && typeof o.use_when === "string" && typeof o.body === "string" && o.title.trim() && o.use_when.trim() && o.body.trim()) {
-        card = {
-          title: o.title.trim(),
-          use_when: o.use_when.trim(),
-          body: o.body.trim()
-        };
-      }
-    }
-    return { action, closest_slug: closest, reason, card };
-  } catch {
-    return null;
-  }
-}
-function logGate(home, event) {
-  try {
-    appendFileSync(join8(logsDir(home), "gate.log"), `${JSON.stringify(event)}
-`);
-  } catch {}
-}
-function normalizeProposal(p) {
-  const title = p.title?.trim();
-  const use_when = p.use_when?.trim();
-  const body = p.body?.trim();
-  if (!title || !use_when || !body)
-    return null;
-  return { title, use_when, body };
-}
-async function gateAndWrite(complete, store, proposals, opts) {
-  const result = {
-    written: 0,
-    merged: 0,
-    discarded: 0,
-    skipped: 0,
-    events: []
-  };
-  for (const rawProp of proposals) {
-    const proposed = normalizeProposal(rawProp);
-    if (!proposed) {
-      result.skipped += 1;
-      continue;
-    }
-    const hive = store.listCards();
-    if (hive.length === 0) {
-      const card = store.writeNew(proposed);
-      const event = {
-        ts: new Date().toISOString(),
-        action: "create",
-        proposed,
-        closest_slug: null,
-        reason: "empty hive",
-        result_slug: card.slug
-      };
-      result.written += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-      continue;
-    }
-    let decision = null;
-    let parseError;
-    try {
-      const raw = await complete({
-        system: DEFAULT_GATE_PROMPT,
-        user: formatGateUserMessage(proposed, hive),
-        host: opts?.host,
-        cwd: opts?.cwd ?? join8(store.home, "scratch")
-      });
-      decision = parseGateDecision(raw);
-      if (!decision)
-        parseError = "unparsable-gate-json";
-    } catch (err) {
-      parseError = err instanceof Error ? err.message : String(err);
-    }
-    if (!decision) {
-      const event = {
-        ts: new Date().toISOString(),
-        action: "discard",
-        proposed,
-        closest_slug: null,
-        reason: "gate parse/error — discarded",
-        result_slug: null,
-        error: parseError
-      };
-      result.discarded += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-      continue;
-    }
-    if (decision.action === "discard") {
-      const event = {
-        ts: new Date().toISOString(),
-        action: "discard",
-        proposed,
-        closest_slug: decision.closest_slug,
-        reason: decision.reason,
-        result_slug: null
-      };
-      result.discarded += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-      continue;
-    }
-    if (decision.action === "merge") {
-      const slug = decision.closest_slug;
-      const mergedCard = decision.card ?? proposed;
-      if (!slug || !store.read(slug)) {
-        const card = store.writeNew(mergedCard);
-        const event = {
-          ts: new Date().toISOString(),
-          action: "create",
-          proposed,
-          closest_slug: slug,
-          reason: `${decision.reason} (merge target missing — created)`,
-          result_slug: card.slug,
-          error: slug ? `missing-slug:${slug}` : "merge-without-slug"
-        };
-        result.written += 1;
-        result.events.push(event);
-        logGate(store.home, event);
-        continue;
-      }
-      const card = store.update(slug, mergedCard);
-      const event = {
-        ts: new Date().toISOString(),
-        action: "merge",
-        proposed,
-        closest_slug: slug,
-        reason: decision.reason,
-        result_slug: card.slug
-      };
-      result.merged += 1;
-      result.events.push(event);
-      logGate(store.home, event);
-      continue;
-    }
-    const createCard = decision.card ?? proposed;
-    const card = store.writeNew(createCard);
-    const event = {
-      ts: new Date().toISOString(),
-      action: "create",
-      proposed,
-      closest_slug: decision.closest_slug,
-      reason: decision.reason,
-      result_slug: card.slug
-    };
-    result.written += 1;
-    result.events.push(event);
-    logGate(store.home, event);
-  }
-  return result;
-}
-
 // src/reflection/prompt.ts
-import { existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
-import { join as join9 } from "node:path";
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
+import { join as join8 } from "node:path";
 var DEFAULT_REFLECTION_PROMPT = `You extract 0–5 durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
@@ -30153,10 +30087,10 @@ function loadReflectionPrompt(opts) {
 ${extra}`;
 }
 function readExtraPrompt(cwd, home) {
-  for (const path of [join9(cwd, "REFLECTION.md"), join9(home, "REFLECTION.md")]) {
-    if (!existsSync9(path))
+  for (const path of [join8(cwd, "REFLECTION.md"), join8(home, "REFLECTION.md")]) {
+    if (!existsSync8(path))
       continue;
-    const text = readFileSync9(path, "utf8").trim();
+    const text = readFileSync8(path, "utf8").trim();
     if (text)
       return text;
   }
@@ -30191,28 +30125,35 @@ function shouldTryResume(opts) {
     return false;
   return hostSupportsResume(opts.host ?? "auto");
 }
-async function commitProposals(complete, store, proposals, opts) {
-  if (!cardGateEnabled()) {
-    const result = writeProposedCards(store, proposals);
-    return { written: result.written.length, skipped: result.skipped.length };
+async function embedWritten(store, cards) {
+  let n = 0;
+  for (const card of cards) {
+    try {
+      await store.embedCard(card);
+      n += 1;
+    } catch (err) {
+      log(store.home, `embed-fail slug=${card.slug} err=${err instanceof Error ? err.message : String(err)}`.slice(0, 240));
+    }
   }
-  const gated = await gateAndWrite(complete, store, proposals, {
-    host: opts.host,
-    cwd: opts.cwd ?? join10(store.home, "scratch")
-  });
-  log(store.home, `gate wrote=${gated.written} merged=${gated.merged} discarded=${gated.discarded} skipped=${gated.skipped}`);
+  return n;
+}
+async function commitProposals(store, proposals) {
+  const result = writeProposedCards(store, proposals);
+  const embedded = await embedWritten(store, result.written);
+  log(store.home, `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`);
   return {
-    written: gated.written,
-    skipped: gated.skipped,
-    merged: gated.merged,
-    discarded: gated.discarded
+    written: result.written.length,
+    skipped: result.skipped.length,
+    merged: 0,
+    discarded: 0,
+    embedded
   };
 }
 async function reflect(opts) {
   const store = new CardStore(opts.home);
   try {
     const system = loadReflectionPrompt({ cwd: opts.cwd, home: store.home });
-    let transcript = readFileSync10(opts.transcriptPath, "utf8");
+    let transcript = readFileSync9(opts.transcriptPath, "utf8");
     if (transcript.length > 120000) {
       transcript = transcript.slice(-120000);
     }
@@ -30221,7 +30162,7 @@ async function reflect(opts) {
       return { written: 0, skipped: 0 };
     }
     const complete = opts.completer ?? createCompleter();
-    const scratch = join10(store.home, "scratch");
+    const scratch = join9(store.home, "scratch");
     const resumeCwd = opts.cwd ?? scratch;
     if (shouldTryResume(opts)) {
       try {
@@ -30234,8 +30175,8 @@ async function reflect(opts) {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(complete, store, filterProposals(parsed), opts);
-          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped}` + (result.merged != null ? ` merged=${result.merged}` : "") + (result.discarded != null ? ` discarded=${result.discarded}` : ""));
+          const result = await commitProposals(store, filterProposals(parsed));
+          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
           return result;
         }
         log(store.home, "path=resume-fail reason=unparsable");
@@ -30254,8 +30195,8 @@ async function reflect(opts) {
       host: opts.host,
       cwd: scratch
     });
-    const result = await commitProposals(complete, store, parseProposals(raw), opts);
-    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped}` + (result.merged != null ? ` merged=${result.merged}` : "") + (result.discarded != null ? ` discarded=${result.discarded}` : ""));
+    const result = await commitProposals(store, parseProposals(raw));
+    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
     return result;
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);
@@ -30283,11 +30224,25 @@ function parseProposals(raw) {
   return filterProposals(extractProposalArray(raw) ?? []);
 }
 function filterProposals(parsed) {
-  return parsed.filter((p) => !!p && typeof p === "object" && typeof p.title === "string" && typeof p.use_when === "string" && typeof p.body === "string");
+  const out = [];
+  for (const p of parsed) {
+    if (!p || typeof p !== "object")
+      continue;
+    const o = p;
+    if (typeof o.title !== "string" || typeof o.use_when !== "string" || typeof o.body !== "string") {
+      continue;
+    }
+    out.push({
+      title: o.title,
+      use_when: o.use_when,
+      body: o.body
+    });
+  }
+  return out;
 }
 function log(home, line) {
   try {
-    appendFileSync2(join10(logsDir(home), "reflect.log"), `${new Date().toISOString()} ${line}
+    appendFileSync(join9(logsDir(home), "reflect.log"), `${new Date().toISOString()} ${line}
 `);
   } catch {}
 }
@@ -30313,36 +30268,51 @@ async function cmdReflect(args) {
 }
 
 // src/cli/commands/search.ts
-import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync7 } from "node:fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync7 } from "node:fs";
 import { createHash } from "node:crypto";
-import { join as join11 } from "node:path";
+import { join as join10 } from "node:path";
 function logLine(file, payload) {
   const home = process.env.MUTON_HOME;
   if (!home)
     return;
   try {
     mkdirSync7(home, { recursive: true });
-    appendFileSync3(join11(home, file), `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}
+    appendFileSync2(join10(home, file), `${JSON.stringify({ ts: new Date().toISOString(), ...payload })}
 `);
   } catch {}
 }
-function cmdSearch(args) {
+function envFlag2(name) {
+  const v = process.env[name];
+  return v === "1" || v === "true";
+}
+async function cmdSearch(args) {
   const json = args.includes("--json");
-  const query = args.filter((a) => a !== "--json").join(" ").trim();
+  let k = 5;
+  const queryParts = [];
+  for (let i = 0;i < args.length; i++) {
+    const a = args[i];
+    if (a === "--json")
+      continue;
+    if (a === "--k" && args[i + 1]) {
+      k = Number.parseInt(args[++i], 10) || 5;
+      continue;
+    }
+    queryParts.push(a);
+  }
+  const query = queryParts.join(" ").trim();
   if (!query) {
-    console.error("Usage: muton search [--json] <query>");
+    console.error("Usage: muton search [--json] [--k N] <query>");
     process.exit(1);
   }
   const store = new CardStore;
   try {
-    const hybrid = process.env.MUTON_HYBRID === "1" || process.env.MUTON_HYBRID === "true" || process.env.MUTON_HYBRID_SEARCH === "1";
-    const result = searchCards(store, query, {
-      k: 5,
-      hybrid,
+    const vector = envFlag2("MUTON_VECTOR") || envFlag2("MUTON_VECTOR_SEARCH");
+    const result = vector ? await searchCardsVector(store, query, { k }) : searchCards(store, query, {
+      k,
       skipRewrite: true
     });
     logLine("search-debug.log", {
-      mode: hybrid ? "hybrid_2plus2" : "single",
+      mode: vector ? "vector" : "fts",
       argv_chars: query.length,
       argv_sha256: createHash("sha256").update(query).digest("hex").slice(0, 16),
       argv_head: query.slice(0, 120).replace(/\n/g, "\\n"),
@@ -30352,6 +30322,7 @@ function cmdSearch(args) {
       hit_scores: result.hits.map((h) => h.score),
       context_chars: (result.context || "").length,
       card_count: store.cardCount(),
+      embedding_count: store.listEmbeddings().length,
       fts_tokens_instruction: tokenize(query),
       fts_query_instruction: toFtsQuery(query)
     });
@@ -30368,7 +30339,8 @@ function cmdSearch(args) {
           slug: h.slug,
           title: h.title,
           use_when: h.use_when,
-          score: h.score
+          score: h.score,
+          body: h.body
         })),
         context: result.context,
         query_original: query,
@@ -30383,7 +30355,7 @@ function cmdSearch(args) {
       return;
     }
     for (const h of result.hits) {
-      console.log(`- ${h.title} (${h.slug}) score=${h.score.toFixed(2)}`);
+      console.log(`- ${h.title} (${h.slug}) score=${h.score.toFixed(4)}`);
       console.log(`  use_when: ${h.use_when}`);
     }
   } finally {
@@ -30409,10 +30381,10 @@ async function main() {
       cmdInstall(rest);
       break;
     case "search":
-      cmdSearch(rest);
+      await cmdSearch(rest);
       break;
     case "propose":
-      cmdPropose(rest);
+      await cmdPropose(rest);
       break;
     case "reflect":
       await cmdReflect(rest);

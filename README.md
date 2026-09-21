@@ -1,14 +1,14 @@
 # mutongate
 
-Private Muton fork: **hybrid Card search** + **stock reflect** + **LLM card gate** (create / merge / discard).
+Private Muton fork: **vector card hive** + **agentic `muton_search` tool** (no auto-inject) + **stock ungated reflect**.
 
-Version: `0.2.1-qr3-cardgate`
+Version: `0.3.0`
 
 ## What's included
 
 | Path | Purpose |
 |------|---------|
-| `src/` | Muton CLI source (hybrid FTS, stock reflect, `src/reflection/gate.ts`) |
+| `src/` | Muton CLI source (vector search, FTS fallback, ungated stock reflect) |
 | `prompts/REFLECTION.md` | Stock reflection prompt |
 | `harbor/` | Harbor/Pi wiring: `muton-real`, wrapper, Pi extension, mounts template |
 | `scripts/run-database-analytics.sh` | Smoke 10 / medium 40 / full 174 Harbor runner |
@@ -19,21 +19,20 @@ Version: `0.2.1-qr3-cardgate`
 ```bash
 bun install && bun run build
 cp dist/cli.js harbor/bin/muton-real
-echo "0.2.1-qr3-cardgate" > harbor/MUTON_VERSION.txt
+echo "0.3.0" > harbor/MUTON_VERSION.txt
 ```
 
 ## Env (the system)
 
 | Variable | Meaning |
 |----------|---------|
-| `MUTON_HYBRID=1` | Dual FTS (instruction + question) |
-| `MUTON_HYBRID_K_INSTRUCTION` | Instruction-channel k (e.g. `3`) |
-| `MUTON_HYBRID_K_QUESTION` | Question-channel k (e.g. `3`) |
-| `MUTON_CARD_GATE=1` | LLM gate after reflect (default on) |
-| `MUTON_MODEL` / `MUTON_API_KEY` | Model for reflect + gate |
+| `MUTON_VECTOR=1` | Semantic search over card embeddings (Harbor agent tool path) |
+| `MUTON_MAX_SEARCHES` | Per-step `muton_search` budget (default 10) |
+| `MUTON_EMBED_MODEL` | Embedding model (default `text-embedding-3-small`) |
+| `MUTON_MODEL` / `MUTON_API_KEY` | Model for session-end reflect |
 | `OPENAI_API_KEY` | Passed through to the agent |
 
-Stock reflect = “Prefer concrete state…” (not schemaref / outcome-aware).
+Harbor always uses cold hive + vector `muton_search` + ungated reflect. Guidelines tell the agent to minimize `db query` and trust hive schema over `sqlite_master` / `PRAGMA`.
 
 ## Harbor database-analytics (10 / 40 / 174)
 
@@ -53,9 +52,8 @@ There is no `database-analytics-hooks10` directory. Smoke/medium share `.alb/smo
 
 ## Docs
 
+- [docs/VECTOR.md](docs/VECTOR.md) — vector hive + `muton_search`
 - [docs/DATABASE-ANALYTICS.md](docs/DATABASE-ANALYTICS.md) — 10 / 40 / 174 recipes
-- [docs/CARDGATE.md](docs/CARDGATE.md) — gate prompt & actions
-- [docs/HYBRID.md](docs/HYBRID.md) — hybrid k
 
 ## License
 

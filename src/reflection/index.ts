@@ -1,10 +1,9 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CardStore, logsDir } from "../store/index.ts";
+import { CardStore, logsDir, type ProposeInput } from "../store/index.ts";
 import { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 import type { Completer } from "./complete/index.ts";
 import { createCompleter } from "./complete/index.ts";
-import { cardGateEnabled, gateAndWrite } from "./gate.ts";
 import { loadReflectionPrompt } from "./prompt.ts";
 import { writeProposedCards } from "./writer.ts";
 
@@ -22,6 +21,7 @@ export type ReflectResult = {
   skipped: number;
   merged?: number;
   discarded?: number;
+  embedded?: number;
 };
 
 /** Short user text for host session resume. Do not attach the transcript. */
@@ -35,33 +35,49 @@ function shouldTryResume(opts: ReflectOptions): boolean {
   return hostSupportsResume(opts.host ?? "auto");
 }
 
-async function commitProposals(
-  complete: Completer,
+async function embedWritten(
   store: CardStore,
-  proposals: Array<{ title: string; use_when: string; body: string }>,
-  opts: ReflectOptions,
-): Promise<ReflectResult> {
-  if (!cardGateEnabled()) {
-    const result = writeProposedCards(store, proposals);
-    return { written: result.written.length, skipped: result.skipped.length };
+  cards: { slug: string; title: string; use_when: string; body: string; created_at: string; updated_at: string }[],
+): Promise<number> {
+  let n = 0;
+  for (const card of cards) {
+    try {
+      await store.embedCard(card);
+      n += 1;
+    } catch (err) {
+      log(
+        store.home,
+        `embed-fail slug=${card.slug} err=${err instanceof Error ? err.message : String(err)}`.slice(
+          0,
+          240,
+        ),
+      );
+    }
   }
-  const gated = await gateAndWrite(complete, store, proposals, {
-    host: opts.host,
-    cwd: opts.cwd ?? join(store.home, "scratch"),
-  });
+  return n;
+}
+
+async function commitProposals(
+  store: CardStore,
+  proposals: ProposeInput[],
+): Promise<ReflectResult> {
+  // Stock hive cards: ungated lexical upsert.
+  const result = writeProposedCards(store, proposals);
+  const embedded = await embedWritten(store, result.written);
   log(
     store.home,
-    `gate wrote=${gated.written} merged=${gated.merged} discarded=${gated.discarded} skipped=${gated.skipped}`,
+    `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`,
   );
   return {
-    written: gated.written,
-    skipped: gated.skipped,
-    merged: gated.merged,
-    discarded: gated.discarded,
+    written: result.written.length,
+    skipped: result.skipped.length,
+    merged: 0,
+    discarded: 0,
+    embedded,
   };
 }
 
-/** Run silent reflection: transcript → model → Cards (optionally gated). */
+/** Run silent reflection: transcript → model → Cards (ungated) + embeddings. */
 export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
   const store = new CardStore(opts.home);
   try {
@@ -90,17 +106,10 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(
-            complete,
-            store,
-            filterProposals(parsed),
-            opts,
-          );
+          const result = await commitProposals(store, filterProposals(parsed));
           log(
             store.home,
-            `path=resume wrote=${result.written} skipped=${result.skipped}` +
-              (result.merged != null ? ` merged=${result.merged}` : "") +
-              (result.discarded != null ? ` discarded=${result.discarded}` : ""),
+            `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
           );
           return result;
         }
@@ -121,12 +130,10 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
       host: opts.host,
       cwd: scratch,
     });
-    const result = await commitProposals(complete, store, parseProposals(raw), opts);
+    const result = await commitProposals(store, parseProposals(raw));
     log(
       store.home,
-      `path=fallback wrote=${result.written} skipped=${result.skipped}` +
-        (result.merged != null ? ` merged=${result.merged}` : "") +
-        (result.discarded != null ? ` discarded=${result.discarded}` : ""),
+      `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
     );
     return result;
   } catch (err) {
@@ -152,23 +159,29 @@ export function extractProposalArray(raw: string): unknown[] | null {
   }
 }
 
-export function parseProposals(
-  raw: string,
-): Array<{ title: string; use_when: string; body: string }> {
+export function parseProposals(raw: string): ProposeInput[] {
   return filterProposals(extractProposalArray(raw) ?? []);
 }
 
-function filterProposals(
-  parsed: unknown[],
-): Array<{ title: string; use_when: string; body: string }> {
-  return parsed.filter(
-    (p): p is { title: string; use_when: string; body: string } =>
-      !!p &&
-      typeof p === "object" &&
-      typeof (p as { title: unknown }).title === "string" &&
-      typeof (p as { use_when: unknown }).use_when === "string" &&
-      typeof (p as { body: unknown }).body === "string",
-  );
+function filterProposals(parsed: unknown[]): ProposeInput[] {
+  const out: ProposeInput[] = [];
+  for (const p of parsed) {
+    if (!p || typeof p !== "object") continue;
+    const o = p as Record<string, unknown>;
+    if (
+      typeof o.title !== "string" ||
+      typeof o.use_when !== "string" ||
+      typeof o.body !== "string"
+    ) {
+      continue;
+    }
+    out.push({
+      title: o.title,
+      use_when: o.use_when,
+      body: o.body,
+    });
+  }
+  return out;
 }
 
 function log(home: string, line: string): void {
@@ -183,10 +196,3 @@ export { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 export { createCompleter } from "./complete/index.ts";
 export { loadReflectionPrompt } from "./prompt.ts";
 export { writeProposedCards } from "./writer.ts";
-export {
-  DEFAULT_GATE_PROMPT,
-  cardGateEnabled,
-  gateAndWrite,
-  parseGateDecision,
-  formatGateUserMessage,
-} from "./gate.ts";
