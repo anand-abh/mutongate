@@ -72,7 +72,7 @@ describe("reflect", () => {
         completer: async (req) => {
           expect(req.user).toBe("We learned that Stripe returns 200 with error body.");
           expect(req.user).not.toContain("Existing card titles");
-          expect(req.system).toContain("The store merges near-duplicates");
+          expect(req.system).toContain("Near-duplicates may be merged");
           return JSON.stringify([
             {
               title: "Stripe 200 error body",
@@ -121,6 +121,8 @@ describe("reflect", () => {
       body: "Read JSON error even when status is 200.",
     });
     store.close();
+    const prevAgent = process.env.MUTON_MERGE_AGENT;
+    process.env.MUTON_MERGE_AGENT = "0";
     try {
       let calls = 0;
       const result = await reflect({
@@ -142,11 +144,65 @@ describe("reflect", () => {
       });
       expect(calls).toBe(1);
       expect(result.written).toBe(1);
+      expect(result.merged).toBe(1);
       expect(result.skipped).toBe(0);
       const after = new CardStore(root);
       try {
         expect(after.cardCount()).toBe(1);
         expect(after.read("stripe-rate-limit-returns-200")?.body).toContain("error field");
+      } finally {
+        after.close();
+      }
+    } finally {
+      if (prevAgent === undefined) delete process.env.MUTON_MERGE_AGENT;
+      else process.env.MUTON_MERGE_AGENT = prevAgent;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("vector merge expands neighbor via agent decision", async () => {
+    process.env.MUTON_EMBED_MOCK = "1";
+    const root = mkdtempSync(join(tmpdir(), "muton-reflect-merge-"));
+    const transcript = join(root, "t.txt");
+    writeFileSync(transcript, "Stripe 200 bodies need the error field parsed.");
+    const store = new CardStore(root);
+    const first = store.writeNew({
+      title: "Stripe rate limit returns 200",
+      use_when: "Stripe HTTP responses",
+      body: "Read JSON error even when status is 200.",
+    });
+    await store.embedCard(first);
+    store.close();
+    try {
+      const result = await reflect({
+        transcriptPath: transcript,
+        home: root,
+        completer: async (req) => {
+          if (req.system.includes("decide whether a proposed Muton")) {
+            return JSON.stringify({
+              action: "merge",
+              slug: first.slug,
+              title: "Stripe 200 error body",
+              use_when: "Stripe HTTP responses",
+              body:
+                "Read JSON error even when status is 200. Parse the error field before treating 2xx as success.",
+            });
+          }
+          return JSON.stringify([
+            {
+              title: "Stripe 200 error body",
+              use_when: "Handling Stripe HTTP",
+              body: "Parse the error field before treating 2xx as success.",
+            },
+          ]);
+        },
+      });
+      expect(result.written).toBe(1);
+      expect(result.merged).toBe(1);
+      const after = new CardStore(root);
+      try {
+        expect(after.cardCount()).toBe(1);
+        expect(after.read(first.slug)?.body).toContain("Parse the error field");
       } finally {
         after.close();
       }
@@ -266,17 +322,22 @@ describe("reflect", () => {
 });
 
 describe("writeProposedCards", () => {
-  test("skips invalid proposals", () => {
+  test("skips invalid proposals", async () => {
     const root = mkdtempSync(join(tmpdir(), "muton-writer-"));
     const store = new CardStore(root);
+    const prevAgent = process.env.MUTON_MERGE_AGENT;
+    process.env.MUTON_MERGE_AGENT = "0";
     try {
-      const result = writeProposedCards(store, [
+      const result = await writeProposedCards(store, [
         { title: "", use_when: "x", body: "y" },
         { title: "Ok", use_when: "when", body: "fact" },
       ]);
       expect(result.skipped).toEqual(["(invalid)"]);
       expect(result.written).toHaveLength(1);
+      expect(result.merged).toHaveLength(0);
     } finally {
+      if (prevAgent === undefined) delete process.env.MUTON_MERGE_AGENT;
+      else process.env.MUTON_MERGE_AGENT = prevAgent;
       store.close();
       rmSync(root, { recursive: true, force: true });
     }

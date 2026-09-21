@@ -29799,77 +29799,6 @@ async function searchCardsVector(store, query, options = {}) {
   };
 }
 
-// src/mcp/tools.ts
-async function startMcpServer(home) {
-  const store = new CardStore(home);
-  const server = new McpServer({ name: "muton", version: "0.1.0" });
-  const useVector = process.env.MUTON_VECTOR === "1" || process.env.MUTON_VECTOR === "true";
-  server.tool("search", "Search durable Muton Cards in the shared hive before acting", { query: string2().describe("Search query") }, async ({ query }) => {
-    const { context, hits } = useVector ? await searchCardsVector(store, query, { k: 5 }) : searchCards(store, query, { k: 5 });
-    return {
-      content: [
-        {
-          type: "text",
-          text: context || JSON.stringify({ hits: hits.map((h) => h.title) })
-        }
-      ]
-    };
-  });
-  server.tool("propose", "Create or update a durable Card in the shared hive (near-duplicates update in place)", {
-    title: string2(),
-    use_when: string2(),
-    body: string2()
-  }, async ({ title, use_when, body }) => {
-    const card = store.upsert({ title, use_when, body });
-    try {
-      await store.embedCard(card);
-    } catch {}
-    return {
-      content: [{ type: "text", text: `Stored card ${card.slug}` }]
-    };
-  });
-  const transport = new StdioServerTransport;
-  await server.connect(transport);
-}
-// src/cli/commands/mcp.ts
-async function cmdMcp() {
-  await startMcpServer();
-}
-
-// src/cli/commands/propose.ts
-function flag(args, name) {
-  const idx = args.indexOf(name);
-  if (idx < 0)
-    return;
-  return args[idx + 1];
-}
-async function cmdPropose(args) {
-  const title = flag(args, "--title");
-  const useWhen = flag(args, "--use-when");
-  const body = flag(args, "--body");
-  if (!title || !useWhen || !body) {
-    console.error("Usage: muton propose --title <t> --use-when <u> --body <b>");
-    process.exit(1);
-  }
-  const store = new CardStore;
-  try {
-    const card = store.upsert({ title, use_when: useWhen, body });
-    try {
-      await store.embedCard(card);
-    } catch (err) {
-      console.error(`Wrote ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`);
-      return;
-    }
-    console.log(`Wrote ${card.slug}`);
-  } finally {
-    store.close();
-  }
-}
-
-// src/reflection/index.ts
-import { appendFileSync, readFileSync as readFileSync9 } from "node:fs";
-import { join as join9 } from "node:path";
-
 // src/reflection/complete/host-cli.ts
 import { spawn as spawn2 } from "node:child_process";
 function usableSessionId(id) {
@@ -30057,6 +29986,229 @@ function createCompleter() {
   };
 }
 
+// src/reflection/merge-propose.ts
+var DEFAULT_MERGE_K = 2;
+function envInt3(name, fallback) {
+  const v = process.env[name];
+  if (v === undefined || v === "")
+    return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function mergeAgentEnabled() {
+  const v = (process.env.MUTON_MERGE_AGENT ?? "1").trim().toLowerCase();
+  return v !== "0" && v !== "false" && v !== "off";
+}
+var MERGE_SYSTEM = `You decide whether a proposed Muton knowledge card should merge into one existing neighbor or be created as a new card.
+
+Return ONLY JSON (no markdown fences, no commentary):
+{"action":"create"}
+OR
+{"action":"merge","slug":"<neighbor-slug>","title":"...","use_when":"...","body":"..."}
+
+Rules:
+- Merge when the proposal is the same fact, a near-duplicate, or a refinement/extension of one neighbor.
+- On merge, expand ALL fields (title, use_when, and body) so the result keeps prior facts and adds the new information. Do not drop useful prior detail.
+- Create when the proposal is a distinct durable fact that should stay its own card.
+- When action is merge, slug MUST be one of the neighbor slugs listed.
+- Do not invent facts that are not in the proposal or the chosen neighbor.`;
+function formatNeighbor(hit) {
+  const score = typeof hit.score === "number" ? ` score=${hit.score.toFixed(4)}` : "";
+  return [
+    `slug=${hit.slug}${score}`,
+    `title: ${hit.title}`,
+    `use_when: ${hit.use_when}`,
+    `body: ${hit.body}`
+  ].join(`
+`);
+}
+function buildMergeUser(proposal, neighbors) {
+  const blocks = neighbors.map((n, i) => `### Neighbor ${i + 1}
+${formatNeighbor(n)}`);
+  return [
+    "## Neighbors (vector nearest)",
+    blocks.join(`
+
+`),
+    "",
+    "## Proposal",
+    `title: ${proposal.title}`,
+    `use_when: ${proposal.use_when}`,
+    `body: ${proposal.body}`,
+    "",
+    "Decide create vs merge. Return ONLY the JSON object."
+  ].join(`
+`);
+}
+function parseMergeDecision(raw, allowedSlugs) {
+  const text = raw.trim();
+  const fence = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
+  const jsonText = fence?.[1]?.trim() ?? text;
+  const start = jsonText.indexOf("{");
+  const end = jsonText.lastIndexOf("}");
+  if (start < 0 || end < 0)
+    return null;
+  try {
+    const parsed = JSON.parse(jsonText.slice(start, end + 1));
+    if (parsed.action === "create")
+      return { action: "create" };
+    if (parsed.action !== "merge")
+      return null;
+    if (typeof parsed.slug !== "string" || typeof parsed.title !== "string" || typeof parsed.use_when !== "string" || typeof parsed.body !== "string") {
+      return null;
+    }
+    const slug = parsed.slug.trim();
+    const title = parsed.title.trim();
+    const use_when = parsed.use_when.trim();
+    const body = parsed.body.trim();
+    if (!slug || !title || !use_when || !body)
+      return null;
+    if (!allowedSlugs.has(slug))
+      return null;
+    return { action: "merge", slug, title, use_when, body };
+  } catch {
+    return null;
+  }
+}
+async function proposeCard(store, input, opts = {}) {
+  const title = input.title.trim();
+  const use_when = input.use_when.trim();
+  const body = input.body.trim();
+  const proposal = { title, use_when, body };
+  const now = opts.now ?? new Date;
+  if (opts.lexicalOnly || !mergeAgentEnabled()) {
+    const before = store.cardCount();
+    const card = store.upsert(proposal, now);
+    return { card, merged: store.cardCount() === before };
+  }
+  const k = opts.k ?? envInt3("MUTON_MERGE_K", DEFAULT_MERGE_K);
+  if (k <= 0 || store.cardCount() === 0) {
+    return { card: store.writeNew(proposal, now), merged: false };
+  }
+  let neighbors = [];
+  try {
+    const result = await searchCardsVector(store, cardEmbedText(proposal), { k });
+    neighbors = result.hits.map((h) => ({
+      slug: h.slug,
+      title: h.title,
+      use_when: h.use_when,
+      body: h.body,
+      score: h.score
+    }));
+  } catch {
+    const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
+    const card = store.upsert(proposal, now);
+    return { card, merged: beforeSlugs.has(card.slug) };
+  }
+  if (neighbors.length === 0) {
+    const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
+    const card = store.upsert(proposal, now);
+    return { card, merged: beforeSlugs.has(card.slug) };
+  }
+  const allowed = new Set(neighbors.map((n) => n.slug));
+  const complete = opts.completer ?? createCompleter();
+  try {
+    const raw = await complete({
+      system: MERGE_SYSTEM,
+      user: buildMergeUser(proposal, neighbors)
+    });
+    const decision = parseMergeDecision(raw, allowed);
+    if (!decision || decision.action === "create") {
+      return { card: store.writeNew(proposal, now), merged: false };
+    }
+    const card = store.update(decision.slug, {
+      title: decision.title,
+      use_when: decision.use_when,
+      body: decision.body
+    }, now);
+    return { card, merged: true };
+  } catch {
+    const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
+    const card = store.upsert(proposal, now);
+    return { card, merged: beforeSlugs.has(card.slug) };
+  }
+}
+
+// src/mcp/tools.ts
+async function startMcpServer(home) {
+  const store = new CardStore(home);
+  const server = new McpServer({ name: "muton", version: "0.1.0" });
+  const useVector = process.env.MUTON_VECTOR === "1" || process.env.MUTON_VECTOR === "true";
+  server.tool("search", "Search durable Muton Cards in the shared hive before acting", { query: string2().describe("Search query") }, async ({ query }) => {
+    const { context, hits } = useVector ? await searchCardsVector(store, query, { k: 5 }) : searchCards(store, query, { k: 5 });
+    return {
+      content: [
+        {
+          type: "text",
+          text: context || JSON.stringify({ hits: hits.map((h) => h.title) })
+        }
+      ]
+    };
+  });
+  server.tool("propose", "Create or merge a durable Card in the shared hive (vector neighbors + agent expand)", {
+    title: string2(),
+    use_when: string2(),
+    body: string2()
+  }, async ({ title, use_when, body }) => {
+    const { card, merged } = await proposeCard(store, { title, use_when, body });
+    try {
+      await store.embedCard(card);
+    } catch {}
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${merged ? "Merged" : "Stored"} card ${card.slug}`
+        }
+      ]
+    };
+  });
+  const transport = new StdioServerTransport;
+  await server.connect(transport);
+}
+// src/cli/commands/mcp.ts
+async function cmdMcp() {
+  await startMcpServer();
+}
+
+// src/cli/commands/propose.ts
+function flag(args, name) {
+  const idx = args.indexOf(name);
+  if (idx < 0)
+    return;
+  return args[idx + 1];
+}
+async function cmdPropose(args) {
+  const title = flag(args, "--title");
+  const useWhen = flag(args, "--use-when");
+  const body = flag(args, "--body");
+  if (!title || !useWhen || !body) {
+    console.error("Usage: muton propose --title <t> --use-when <u> --body <b>");
+    process.exit(1);
+  }
+  const store = new CardStore;
+  try {
+    const { card, merged } = await proposeCard(store, {
+      title,
+      use_when: useWhen,
+      body
+    });
+    try {
+      await store.embedCard(card);
+    } catch (err) {
+      console.error(`${merged ? "Merged" : "Wrote"} ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`);
+      return;
+    }
+    console.log(`${merged ? "Merged" : "Wrote"} ${card.slug}`);
+  } finally {
+    store.close();
+  }
+}
+
+// src/reflection/index.ts
+import { appendFileSync, readFileSync as readFileSync9 } from "node:fs";
+import { join as join9 } from "node:path";
+
 // src/reflection/prompt.ts
 import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
 import { join as join8 } from "node:path";
@@ -30073,7 +30225,7 @@ Rules:
 - Propose only durable facts that would help another agent later.
 - Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints.
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
-- The store merges near-duplicates. Do not list or reuse existing hive titles. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
+- Near-duplicates may be merged into existing hive cards later; prefer distinct durable facts. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
 - Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
 - title and use_when are mandatory and non-empty. body is the durable fact.`;
 function loadReflectionPrompt(opts) {
@@ -30098,8 +30250,9 @@ function readExtraPrompt(cwd, home) {
 }
 
 // src/reflection/writer.ts
-function writeProposedCards(store, proposals) {
+async function writeProposedCards(store, proposals, opts = {}) {
   const written = [];
+  const merged = [];
   const skipped = [];
   for (const proposal of proposals) {
     const title = proposal.title?.trim();
@@ -30109,9 +30262,12 @@ function writeProposedCards(store, proposals) {
       skipped.push(title || "(invalid)");
       continue;
     }
-    written.push(store.upsert({ title, use_when: useWhen, body }));
+    const outcome = await proposeCard(store, { title, use_when: useWhen, body }, { completer: opts.completer, lexicalOnly: opts.lexicalOnly });
+    written.push(outcome.card);
+    if (outcome.merged)
+      merged.push(outcome.card);
   }
-  return { written, skipped };
+  return { written, merged, skipped };
 }
 
 // src/reflection/index.ts
@@ -30137,14 +30293,14 @@ async function embedWritten(store, cards) {
   }
   return n;
 }
-async function commitProposals(store, proposals) {
-  const result = writeProposedCards(store, proposals);
+async function commitProposals(store, proposals, completer) {
+  const result = await writeProposedCards(store, proposals, { completer });
   const embedded = await embedWritten(store, result.written);
-  log(store.home, `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`);
+  log(store.home, `commit ungated-hive wrote=${result.written.length} merged=${result.merged.length} skipped=${result.skipped.length} embedded=${embedded}`);
   return {
     written: result.written.length,
     skipped: result.skipped.length,
-    merged: 0,
+    merged: result.merged.length,
     discarded: 0,
     embedded
   };
@@ -30175,8 +30331,8 @@ async function reflect(opts) {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(store, filterProposals(parsed));
-          log(store.home, `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
+          const result = await commitProposals(store, filterProposals(parsed), complete);
+          log(store.home, `path=resume wrote=${result.written} merged=${result.merged ?? 0} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
           return result;
         }
         log(store.home, "path=resume-fail reason=unparsable");
@@ -30195,8 +30351,8 @@ async function reflect(opts) {
       host: opts.host,
       cwd: scratch
     });
-    const result = await commitProposals(store, parseProposals(raw));
-    log(store.home, `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
+    const result = await commitProposals(store, parseProposals(raw), complete);
+    log(store.home, `path=fallback wrote=${result.written} merged=${result.merged ?? 0} skipped=${result.skipped} embedded=${result.embedded ?? 0}`);
     return result;
   } catch (err) {
     log(opts.home ?? store.home, `error: ${err instanceof Error ? err.message : String(err)}`);

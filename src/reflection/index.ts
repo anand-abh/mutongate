@@ -60,18 +60,19 @@ async function embedWritten(
 async function commitProposals(
   store: CardStore,
   proposals: ProposeInput[],
+  completer?: Completer,
 ): Promise<ReflectResult> {
-  // Stock hive cards: ungated lexical upsert.
-  const result = writeProposedCards(store, proposals);
+  // Ungated propose: vector k-NN + agent merge (fallback lexical).
+  const result = await writeProposedCards(store, proposals, { completer });
   const embedded = await embedWritten(store, result.written);
   log(
     store.home,
-    `commit ungated-hive wrote=${result.written.length} skipped=${result.skipped.length} embedded=${embedded}`,
+    `commit ungated-hive wrote=${result.written.length} merged=${result.merged.length} skipped=${result.skipped.length} embedded=${embedded}`,
   );
   return {
     written: result.written.length,
     skipped: result.skipped.length,
-    merged: 0,
+    merged: result.merged.length,
     discarded: 0,
     embedded,
   };
@@ -106,10 +107,10 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
         });
         const parsed = extractProposalArray(raw);
         if (parsed) {
-          const result = await commitProposals(store, filterProposals(parsed));
+          const result = await commitProposals(store, filterProposals(parsed), complete);
           log(
             store.home,
-            `path=resume wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
+            `path=resume wrote=${result.written} merged=${result.merged ?? 0} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
           );
           return result;
         }
@@ -130,10 +131,10 @@ export async function reflect(opts: ReflectOptions): Promise<ReflectResult> {
       host: opts.host,
       cwd: scratch,
     });
-    const result = await commitProposals(store, parseProposals(raw));
+    const result = await commitProposals(store, parseProposals(raw), complete);
     log(
       store.home,
-      `path=fallback wrote=${result.written} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
+      `path=fallback wrote=${result.written} merged=${result.merged ?? 0} skipped=${result.skipped} embedded=${result.embedded ?? 0}`,
     );
     return result;
   } catch (err) {
@@ -195,4 +196,5 @@ function log(home: string, line: string): void {
 export { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 export { createCompleter } from "./complete/index.ts";
 export { loadReflectionPrompt } from "./prompt.ts";
+export { proposeCard } from "./merge-propose.ts";
 export { writeProposedCards } from "./writer.ts";
