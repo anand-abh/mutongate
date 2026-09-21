@@ -13,11 +13,11 @@ import { join } from "node:path";
 const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
 
 const SEARCH_GUIDELINES = [
-  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible.",
-  "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
-  "If muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
-  "Only fall back to sqlite_master / PRAGMA when muton_search returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
-  "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_search for the same topic.",
+  "Use muton_search early (at most 10 searches this step) for durable facts learned in earlier steps — language/token rules, schema/joins, house style, affinity charts, encodings, and similar reusable knowledge.",
+  "If muton_search returns usable facts for the current job, TRUST them and act on them. Do not re-discover the same facts through fresh experiments when the hive already covered them.",
+  "Only fall back to rediscovery (interpreter probes, sqlite_master/PRAGMA, trial-and-error) when search returns nothing useful. Treat empty/irrelevant hive hits as missing memory.",
+  "Minimize wasteful exploration: prefer the fewest env actions that still solve the step once hive knowledge applies.",
+  "For SQL/db tasks: prefer 1–2 targeted db query calls; do not re-run schema probes after a successful muton_search for those tables/joins.",
 ];
 
 function loadType() {
@@ -155,7 +155,7 @@ export default function (pi) {
           content: [
             {
               type: "text",
-              text: `muton_search budget exhausted (${MAX_SEARCHES} searches this step). Continue with db query / local reasoning.`,
+              text: `muton_search budget exhausted (${MAX_SEARCHES} searches this step). Continue with local tools / env actions.`,
             },
           ],
           details: { blocked: true, used, max: MAX_SEARCHES },
