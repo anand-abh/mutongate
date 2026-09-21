@@ -13,10 +13,11 @@ import { join } from "node:path";
 const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
 
 const SEARCH_GUIDELINES = [
-  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible.",
-  "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
-  "If muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
-  "Only fall back to sqlite_master / PRAGMA when muton_search returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
+  "Minimize db query calls. Aim for 1–2 targeted SQL statements when possible.",
+  "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns (including whether a named race/event exists in this dataset).",
+  "Schema ban: if muton_search returned any usable card that names the tables/joins you need, do NOT run sqlite_master or PRAGMA table_info this step. Trust the hive and write the answer query.",
+  "Schema fallback: only use sqlite_master / PRAGMA when muton_search returned nothing useful for those tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
+  "Empty → existence → null: if a targeted query for a named race/event/driver returns no rows, run at most ONE existence check (e.g. SELECT raceId FROM races WHERE year=? AND name=?). If that is empty and Required output allows JSON null, write {\"answer\": null} and STOP. Do not list seasons, scan raceId ranges, or keep fishing.",
   "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_search for the same topic.",
 ];
 
@@ -103,7 +104,7 @@ export default function (pi) {
     const tip = [
       "",
       "MUTON HIVE (vector search — call muton_search; nothing is auto-injected)",
-      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema from muton_search and minimize db query count.",
+      "Override: task text may mention sqlite_master/PRAGMA; with Muton prefer hive schema from muton_search and minimize db query count.",
       ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
     ].join("\n");
     return {
