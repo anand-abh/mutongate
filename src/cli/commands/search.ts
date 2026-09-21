@@ -47,13 +47,11 @@ export async function cmdSearch(args: string[]): Promise<void> {
       ? await searchCardsVector(store, query, { k })
       : searchCards(store, query, {
           k,
-          hybrid:
-            envFlag("MUTON_HYBRID") || envFlag("MUTON_HYBRID_SEARCH"),
           skipRewrite: true,
         });
 
     logLine("search-debug.log", {
-      mode: vector ? "vector" : "legacy",
+      mode: vector ? "vector" : "fts",
       argv_chars: query.length,
       argv_sha256: createHash("sha256").update(query).digest("hex").slice(0, 16),
       argv_head: query.slice(0, 120).replace(/\n/g, "\\n"),

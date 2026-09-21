@@ -61,7 +61,7 @@ async function commitProposals(
   store: CardStore,
   proposals: ProposeInput[],
 ): Promise<ReflectResult> {
-  // Stock hive cards: always ungated lexical upsert (no LLM gate, no primer/initial).
+  // Stock hive cards: ungated lexical upsert.
   const result = writeProposedCards(store, proposals);
   const embedded = await embedWritten(store, result.written);
   log(
@@ -196,13 +196,3 @@ export { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 export { createCompleter } from "./complete/index.ts";
 export { loadReflectionPrompt } from "./prompt.ts";
 export { writeProposedCards } from "./writer.ts";
-export {
-  DEFAULT_GATE_PROMPT,
-  DEFAULT_PRIMER_PROMPT,
-  cardGateEnabled,
-  gateAndWrite,
-  gatePrimerProposal,
-  parseGateDecision,
-  formatGateUserMessage,
-  formatPrimerUserMessage,
-} from "./gate.ts";

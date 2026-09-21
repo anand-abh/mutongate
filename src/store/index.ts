@@ -1,16 +1,6 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  type Card,
-  INITIAL_SLUG,
-  INITIAL_TITLE,
-  INITIAL_USE_WHEN,
-  normalizePrimerFields,
-  parseCard,
-  PRIMER_SLUG,
-  serializeCard,
-  slugify,
-} from "../cards/index.ts";
+import { type Card, parseCard, serializeCard, slugify } from "../cards/index.ts";
 import { cardsDir, indexPath, logsDir, mutonHome, scratchDir, tmpDir } from "./fs.ts";
 import { CardIndex, type FtsHit } from "./sqlite.ts";
 const MERGE_SEARCH_K = 5;
@@ -22,8 +12,6 @@ export type ProposeInput = {
   title: string;
   use_when: string;
   body: string;
-  /** Optional; `primer` selects the single schema-primer path. */
-  kind?: "primer" | "general";
 };
 
 export class CardStore {
@@ -137,44 +125,6 @@ export class CardStore {
       title: input.title.trim(),
       use_when: input.use_when.trim(),
       body: input.body.trim(),
-      created_at: iso,
-      updated_at: iso,
-    });
-  }
-
-  /**
-   * Write/replace the single schema primer at slug `primer`.
-   * `input.body` should be the full primer text after a merge decision.
-   */
-  upsertPrimer(input: ProposeInput, now = new Date()): Card {
-    const fields = normalizePrimerFields(input.body);
-    const existing = this.read(PRIMER_SLUG);
-    if (existing) return this.update(PRIMER_SLUG, fields, now);
-    const iso = now.toISOString();
-    return this.persist({
-      slug: PRIMER_SLUG,
-      ...fields,
-      created_at: iso,
-      updated_at: iso,
-    });
-  }
-
-  /**
-   * Write/replace the fixed `initial` card (first-N-step chat logs).
-   * `body` should be the full card body after merging step sections.
-   */
-  upsertInitial(body: string, now = new Date()): Card {
-    const fields: ProposeInput = {
-      title: INITIAL_TITLE,
-      use_when: INITIAL_USE_WHEN,
-      body: body.trim(),
-    };
-    const existing = this.read(INITIAL_SLUG);
-    if (existing) return this.update(INITIAL_SLUG, fields, now);
-    const iso = now.toISOString();
-    return this.persist({
-      slug: INITIAL_SLUG,
-      ...fields,
       created_at: iso,
       updated_at: iso,
     });

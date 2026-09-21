@@ -1,6 +1,6 @@
 # Vector hive + agentic search
 
-Cards are written with the **stock** reflection prompt (0–5), **ungated**, with **no** primer and **no** initial chat-log card.
+Cards are written with the **stock** reflection prompt (0–5), **ungated**.
 
 On each card write, Muton embeds `title + use_when + body` via an OpenAI-compatible `/embeddings` API (`MUTON_EMBED_MODEL`, default `text-embedding-3-small`) and stores the vector in `index.sqlite` (`card_embeddings`).
 
@@ -16,7 +16,7 @@ Harbor Pi does **not** auto-inject search hits. The extension registers a `muton
   3. **Trust hive schema** — do not re-run `sqlite_master` / `PRAGMA` when search already covered the needed tables/joins
   4. Only fall back to DB schema inspection when search misses
 
-Env for Harbor: `MUTON_VECTOR=1`, `MUTON_HYBRID=0`, `MUTON_CARD_GATE=0`.
+Harbor env: `MUTON_VECTOR=1`, `MUTON_MAX_SEARCHES=10` (cold hive every run).
 
 ## CLI
 
@@ -24,4 +24,4 @@ Env for Harbor: `MUTON_VECTOR=1`, `MUTON_HYBRID=0`, `MUTON_CARD_GATE=0`.
 MUTON_VECTOR=1 muton search --json --k 5 "qualifying q1 null encoding"
 ```
 
-Tests can set `MUTON_EMBED_MOCK=1` for deterministic local vectors.
+Without `MUTON_VECTOR`, CLI/MCP fall back to BM25 FTS. Tests can set `MUTON_EMBED_MOCK=1` for deterministic local vectors.
