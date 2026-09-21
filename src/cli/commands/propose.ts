@@ -1,3 +1,4 @@
+import { proposeCard } from "../../reflection/merge-propose.ts";
 import { CardStore } from "../../store/index.ts";
 
 function flag(args: string[], name: string): string | undefined {
@@ -16,16 +17,20 @@ export async function cmdPropose(args: string[]): Promise<void> {
   }
   const store = new CardStore();
   try {
-    const card = store.upsert({ title, use_when: useWhen, body });
+    const { card, merged } = await proposeCard(store, {
+      title,
+      use_when: useWhen,
+      body,
+    });
     try {
       await store.embedCard(card);
     } catch (err) {
       console.error(
-        `Wrote ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`,
+        `${merged ? "Merged" : "Wrote"} ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`,
       );
       return;
     }
-    console.log(`Wrote ${card.slug}`);
+    console.log(`${merged ? "Merged" : "Wrote"} ${card.slug}`);
   } finally {
     store.close();
   }

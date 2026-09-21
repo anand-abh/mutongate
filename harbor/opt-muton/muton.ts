@@ -13,7 +13,7 @@ import { join } from "node:path";
 const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
 
 const SEARCH_GUIDELINES = [
-  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible.",
+  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible. The db can be queried at most 4 times per question.",
   "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
   "If muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
   "Only fall back to sqlite_master / PRAGMA when muton_search returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
