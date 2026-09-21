@@ -103,7 +103,7 @@ export default function (pi) {
     const tip = [
       "",
       "MUTON HIVE (vector search — call muton_search; nothing is auto-injected)",
-      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema from muton_search and minimize db query count.",
+      "Prefer hive cards from muton_search over rediscovering durable facts in this step.",
       ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
     ].join("\n");
     return {
@@ -116,7 +116,7 @@ export default function (pi) {
     ? Type.Object({
         query: Type.String({
           description:
-            "Natural-language search over durable Muton cards (schema, joins, encodings, or question-specific facts)",
+            "Natural-language search over durable Muton cards (language rules, schema, style, encodings, or step-specific facts)",
         }),
         k: Type.Optional(
           Type.Number({

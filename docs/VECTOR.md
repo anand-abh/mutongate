@@ -16,7 +16,7 @@ Harbor Pi does **not** auto-inject search hits. The extension registers a `muton
   3. **Trust hive schema** — do not re-run `sqlite_master` / `PRAGMA` when search already covered the needed tables/joins
   4. Only fall back to DB schema inspection when search misses
 
-Harbor env: `MUTON_VECTOR=1`, `MUTON_MAX_SEARCHES=10` (cold hive every run).
+Harbor env: `MUTON_VECTOR=1`, `MUTON_MAX_SEARCHES=10` (cold hive every run). Guidelines tell the agent to search the hive for durable facts (language rules, schema, style, etc.) before rediscovering them; SQL tasks still get a prefer-few-queries tip.
 
 ## CLI
 
