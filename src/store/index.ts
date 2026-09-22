@@ -2,7 +2,17 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 
 import { join } from "node:path";
 import { type Card, parseCard, serializeCard, slugify } from "../cards/index.ts";
 import { cardsDir, indexPath, logsDir, mutonHome, scratchDir, tmpDir } from "./fs.ts";
+import {
+  buildTree,
+  formatTree,
+  normalizePath,
+  normalizePaths,
+  type PathListing,
+  type TreeNode,
+  UNCATEGORIZED_PATH,
+} from "./paths.ts";
 import { CardIndex, type FtsHit } from "./sqlite.ts";
+
 const MERGE_SEARCH_K = 5;
 const TITLE_OVERLAP = 0.8;
 const CONTENT_OVERLAP = 0.5;
@@ -12,6 +22,8 @@ export type ProposeInput = {
   title: string;
   use_when: string;
   body: string;
+  /** Soft taxonomy paths (multi-parent). SQLite only — not in markdown. */
+  paths?: string[];
 };
 
 export class CardStore {
@@ -182,9 +194,7 @@ export class CardStore {
 
   /** Embed and store vector for one card. Best-effort; throws on API failure. */
   async embedCard(card: Card): Promise<void> {
-    const { embedText, cardEmbedText, vectorToBuffer } = await import(
-      "../search/embed.ts"
-    );
+    const { embedText, cardEmbedText, vectorToBuffer } = await import("../search/embed.ts");
     const { vector, model } = await embedText(cardEmbedText(card));
     this.upsertEmbedding(card.slug, model, vectorToBuffer(vector));
   }
@@ -196,10 +206,96 @@ export class CardStore {
   rebuildIndex(): void {
     this.getIndex().rebuild(this.listCards());
   }
+
+  /** Replace taxonomy paths for a slug (normalized; empty → uncategorized). */
+  setPaths(slug: string, paths: string[] | undefined): string[] {
+    const normalized = normalizePaths(paths ?? []);
+    this.getIndex().setPaths(slug, normalized);
+    return normalized;
+  }
+
+  /** Union paths onto slug (merge). */
+  addPaths(slug: string, paths: string[] | undefined): string[] {
+    const normalized = normalizePaths(paths ?? []);
+    // If only uncategorized and card already has real paths, skip adding uncategorized.
+    const existing = this.getIndex().getPaths(slug);
+    const toAdd =
+      normalized.length === 1 &&
+      normalized[0] === UNCATEGORIZED_PATH &&
+      existing.some((p) => p !== UNCATEGORIZED_PATH)
+        ? []
+        : normalized;
+    if (toAdd.length) this.getIndex().addPaths(slug, toAdd);
+    // Drop uncategorized if real paths now exist
+    const after = this.getIndex().getPaths(slug);
+    if (after.includes(UNCATEGORIZED_PATH) && after.some((p) => p !== UNCATEGORIZED_PATH)) {
+      const cleaned = after.filter((p) => p !== UNCATEGORIZED_PATH);
+      this.getIndex().setPaths(slug, cleaned);
+      return cleaned;
+    }
+    return after.length ? after : [UNCATEGORIZED_PATH];
+  }
+
+  getPaths(slug: string): string[] {
+    const paths = this.getIndex().getPaths(slug);
+    return paths.length ? paths : [];
+  }
+
+  tree(opts?: { path?: string; depth?: number }): {
+    total_cards: number;
+    path_assignments: number;
+    root: string;
+    nodes: TreeNode[];
+    text: string;
+  } {
+    const depth = opts?.depth ?? 2;
+    const rawRoot = opts?.path?.trim() ?? "";
+    const root = rawRoot
+      ? (normalizePaths([rawRoot]).find((p) => p !== UNCATEGORIZED_PATH) ??
+        normalizePathLoose(rawRoot))
+      : "";
+    const counts = this.getIndex().pathCounts();
+    const nodes = buildTree(counts, root, depth);
+    const text =
+      this.cardCount() === 0
+        ? "(empty hive — 0 cards)"
+        : counts.size === 0
+          ? `(${this.cardCount()} cards, none categorized yet)`
+          : nodes.length === 0 && root
+            ? `(no cards under ${root}/)`
+            : formatTree(nodes);
+    return {
+      total_cards: this.cardCount(),
+      path_assignments: this.getIndex().totalPathAssignments(),
+      root: root || "/",
+      nodes,
+      text,
+    };
+  }
+
+  ls(pathRaw: string): PathListing {
+    const path = normalizePaths([pathRaw])[0] ?? UNCATEGORIZED_PATH;
+    const slugs = this.getIndex().listByPath(path);
+    const cards: PathListing["cards"] = [];
+    for (const slug of slugs) {
+      const card = this.read(slug);
+      if (!card) continue;
+      cards.push({
+        slug: card.slug,
+        title: card.title,
+        use_when: card.use_when,
+      });
+    }
+    return { path, cards };
+  }
 }
 
 function combinedText(fields: { title: string; use_when: string; body: string }): string {
   return `${fields.title} ${fields.use_when} ${fields.body}`;
+}
+
+function normalizePathLoose(raw: string): string {
+  return normalizePath(raw) ?? UNCATEGORIZED_PATH;
 }
 
 function tokenOverlap(a: string, b: string): number {
@@ -220,3 +316,13 @@ export {
   sessionStatePath,
   tmpDir,
 } from "./fs.ts";
+export {
+  buildTree,
+  formatTree,
+  normalizePath,
+  normalizePaths,
+  PATH_VOCAB_HINTS,
+  type PathListing,
+  type TreeNode,
+  UNCATEGORIZED_PATH,
+} from "./paths.ts";

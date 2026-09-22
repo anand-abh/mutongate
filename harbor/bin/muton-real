@@ -13956,372 +13956,8 @@ var require_dist = __commonJS(function(exports, module) {
   exports.default = formatsPlugin;
 });
 
-// src/hooks/normalize.ts
-function asRecord(input) {
-  if (input && typeof input === "object" && !Array.isArray(input)) {
-    return input;
-  }
-  return {};
-}
-function str(v) {
-  return typeof v === "string" ? v : undefined;
-}
-function normalizeHookInput(eventName, rawInput, hostHint) {
-  const raw = asRecord(rawInput);
-  const name = (str(raw.hook_event_name) ?? eventName).toLowerCase();
-  const sessionId = str(raw.session_id) ?? str(raw.conversation_id) ?? str(raw.sessionId) ?? "unknown";
-  const cwd = str(raw.cwd) ?? (Array.isArray(raw.workspace_roots) ? str(raw.workspace_roots[0]) : undefined) ?? process.env.CURSOR_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
-  const transcriptPath = str(raw.transcript_path) ?? str(raw.transcriptPath) ?? process.env.CURSOR_TRANSCRIPT_PATH ?? null;
-  if (name === "sessionstart" || name === "session_start" || name === "session-start" || eventName === "session-start") {
-    return {
-      type: "session-start",
-      sessionId,
-      cwd,
-      workspaceRoots: Array.isArray(raw.workspace_roots) ? raw.workspace_roots.filter((x) => typeof x === "string") : undefined,
-      raw
-    };
-  }
-  if (name === "beforesubmitprompt" || name === "userpromptsubmit" || name === "prompt-submit" || eventName === "prompt-submit") {
-    const prompt = str(raw.prompt) ?? str(raw.user_prompt) ?? str(raw.message) ?? str(raw.content) ?? "";
-    return { type: "prompt-submit", sessionId, prompt, cwd, raw };
-  }
-  if (name === "sessionend" || name === "session_end" || name === "session_shutdown" || name === "session-end" || eventName === "session-end") {
-    return {
-      type: "session-end",
-      sessionId,
-      transcriptPath,
-      cwd,
-      host: hostHint,
-      raw
-    };
-  }
-  return { type: "unknown", raw };
-}
-
-// src/hooks/prompt-submit.ts
-import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-
-// src/search/bm25.ts
-var STOPWORDS = new Set([
-  "a",
-  "an",
-  "the",
-  "and",
-  "or",
-  "but",
-  "if",
-  "then",
-  "else",
-  "at",
-  "by",
-  "for",
-  "with",
-  "from",
-  "into",
-  "to",
-  "of",
-  "in",
-  "on",
-  "is",
-  "are",
-  "was",
-  "were",
-  "be",
-  "been",
-  "being",
-  "have",
-  "has",
-  "had",
-  "do",
-  "does",
-  "did",
-  "it",
-  "its",
-  "this",
-  "that",
-  "these",
-  "those",
-  "i",
-  "you",
-  "he",
-  "she",
-  "we",
-  "they",
-  "me",
-  "my",
-  "your",
-  "our",
-  "can",
-  "will",
-  "would",
-  "could",
-  "should",
-  "may",
-  "might",
-  "please",
-  "how",
-  "what",
-  "which",
-  "who",
-  "why",
-  "where",
-  "not",
-  "no",
-  "so",
-  "just",
-  "also",
-  "than",
-  "too",
-  "very",
-  "http",
-  "https",
-  "www"
-]);
-var MAX_TOKENS = 12;
-function tokenize(text) {
-  const seen = new Set;
-  const tokens = [];
-  const cleaned = text.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").replace(/-/g, " ");
-  for (const raw of cleaned.split(/\s+/)) {
-    const t = raw.trim();
-    if (t.length < 2 || STOPWORDS.has(t) || seen.has(t))
-      continue;
-    seen.add(t);
-    tokens.push(t);
-    if (tokens.length >= MAX_TOKENS)
-      break;
-  }
-  return tokens;
-}
-function toFtsQuery(text) {
-  const tokens = tokenize(text);
-  if (tokens.length === 0)
-    return "";
-  return tokens.map((t) => `"${t.replaceAll('"', "")}"`).join(" OR ");
-}
-
-// src/search/rerank.ts
-function rerank(hits, query) {
-  const terms = tokenize(query);
-  if (terms.length === 0)
-    return [];
-  const distinctive = terms.filter((t) => t.length >= 5);
-  const coverageTerms = distinctive.length > 0 ? distinctive : terms;
-  const minMatches = coverageTerms.length >= 3 ? 2 : 1;
-  const now = Date.now();
-  const ranked = [];
-  for (const hit of hits) {
-    const title = hit.title.toLowerCase();
-    const useWhen = hit.use_when.toLowerCase();
-    const hay = `${title} ${useWhen} ${hit.body.toLowerCase()}`;
-    const coverage = new Set(coverageTerms);
-    let boost = 0;
-    let matched = 0;
-    for (const term of terms) {
-      if (!hay.includes(term))
-        continue;
-      if (coverage.has(term))
-        matched += 1;
-      if (title.includes(term))
-        boost += 2;
-      if (useWhen.includes(term))
-        boost += 1.5;
-    }
-    if (matched < minMatches)
-      continue;
-    const ageMs = Math.max(0, now - Date.parse(hit.updated_at || hit.created_at));
-    const ageDays = ageMs / (1000 * 60 * 60 * 24);
-    const recency = Math.max(0, 1 - ageDays / 365);
-    ranked.push({ ...hit, score: -hit.bm25 + boost + recency * 0.5 + matched });
-  }
-  return ranked.sort((a, b) => b.score - a.score);
-}
-
-// src/search/rewrite.ts
-import { existsSync, readFileSync } from "node:fs";
-var BOILERPLATE = new Set([
-  "formula",
-  "database",
-  "environment",
-  "sqlite",
-  "sqlite3",
-  "python",
-  "program",
-  "programs",
-  "blocked",
-  "paths",
-  "query",
-  "statement",
-  "prints",
-  "json",
-  "rows",
-  "ordinary",
-  "sql",
-  "inspect",
-  "tables",
-  "example",
-  "sqlite_master",
-  "pragma",
-  "table_info",
-  "app",
-  "question",
-  "required",
-  "output",
-  "block",
-  "scored",
-  "file",
-  "answer",
-  "write",
-  "exactly",
-  "object",
-  "verifier",
-  "strips",
-  "whitespace",
-  "compares",
-  "notes",
-  "sessions",
-  "cannot",
-  "exclusively",
-  "pragma"
-]);
-var MAX_CONTENT_TERMS = 16;
-var MAX_PHRASE_CHARS = 180;
-function resolveQuestionText(prompt) {
-  const candidates = [
-    process.env.MUTON_QUESTION_PATH,
-    "/app/question.md"
-  ].filter((p) => Boolean(p));
-  for (const path of candidates) {
-    try {
-      if (existsSync(path)) {
-        const text = readFileSync(path, "utf8");
-        if (text.trim())
-          return { text, source: "question_file" };
-      }
-    } catch {}
-  }
-  const extracted = extractQuestionFromPrompt(prompt);
-  if (extracted)
-    return { text: extracted, source: "prompt_question" };
-  return { text: prompt, source: "prompt" };
-}
-function extractQuestionFromPrompt(prompt) {
-  const stripped = stripBoilerplateSections(prompt);
-  const qBlock = stripped.match(/(?:^|\n)\s*Question\s+\d+\s+of\s+\d+\s*\n+([\s\S]*?)(?=\n\s*Required output|\n\s*\{|$)/i);
-  if (qBlock?.[1]?.trim())
-    return qBlock[1].trim();
-  const lines = stripped.split(`
-`).map((l) => l.trim()).filter(Boolean).filter((l) => !l.startsWith("#") && !l.startsWith("```") && !l.startsWith("-"));
-  const interesting = lines.filter((l) => l.length > 20 && /[?]/.test(l) || /^(please|what|where|when|which|who|how|calculate|give|list|find)\b/i.test(l));
-  if (interesting.length === 1)
-    return interesting[0];
-  if (interesting.length > 1)
-    return interesting.join(" ");
-  return null;
-}
-function stripBoilerplateSections(text) {
-  return text.replace(/```[\s\S]*?```/g, " ").replace(/Required output[\s\S]*$/i, " ").replace(/The only scored file[\s\S]*$/i, " ").replace(/You cannot open the database[\s\S]*?PRAGMA[^\n]*/gi, " ").replace(/`db query[^`]*`/gi, " ").replace(/db query\s+"[^"]*"/gi, " ");
-}
-function cleanQuestionBody(text) {
-  return stripBoilerplateSections(text).replace(/Question\s+\d+\s+of\s+\d+/gi, " ").replace(/\{\s*"answer"[\s\S]*$/i, " ").replace(/\s+/g, " ").trim();
-}
-function rewriteSearchQuery(prompt) {
-  const original = prompt ?? "";
-  const { text, source } = resolveQuestionText(original);
-  const cleaned = cleanQuestionBody(text);
-  if (cleaned && cleaned.length <= MAX_PHRASE_CHARS && (source === "question_file" || source === "prompt_question")) {
-    const phrase = cleaned.replace(/^(please|pls)\s+/i, "").trim();
-    if (phrase.split(/\s+/).length >= 3) {
-      return { original, rewritten: phrase, source };
-    }
-  }
-  const terms = tokenize(cleaned || original).filter((t) => !BOILERPLATE.has(t));
-  let rewritten = terms.slice(0, MAX_CONTENT_TERMS).join(" ").trim();
-  if (!rewritten) {
-    rewritten = tokenize(stripBoilerplateSections(original)).filter((t) => !BOILERPLATE.has(t)).slice(0, MAX_CONTENT_TERMS).join(" ").trim();
-  }
-  if (!rewritten) {
-    rewritten = tokenize(original).slice(0, MAX_CONTENT_TERMS).join(" ");
-  }
-  return { original, rewritten, source };
-}
-
-// src/search/index.ts
-var DEFAULT_K = 5;
-var DEFAULT_MAX_CHARS = 1e5;
-function envFlag(name) {
-  const v = process.env[name];
-  return v === "1" || v === "true";
-}
-function envInt(name, fallback) {
-  const v = process.env[name];
-  if (v === undefined || v === "")
-    return fallback;
-  const n = Number.parseInt(v, 10);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-function rankQuery(store, query, k, exclude, minScore) {
-  if (!query.trim() || store.cardCount() === 0 || k <= 0)
-    return [];
-  const raw = store.searchRaw(query, Math.max(k * 4, 20));
-  let ranked = rerank(raw, query).filter((h) => !exclude.has(h.slug));
-  if (minScore !== undefined) {
-    ranked = ranked.filter((h) => h.score >= minScore);
-  }
-  return ranked.slice(0, k);
-}
-function searchCards(store, query, options = {}) {
-  const k = options.k ?? DEFAULT_K;
-  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
-  const exclude = new Set(options.excludeSlugs ?? []);
-  const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
-  const rewrite = skipRewrite ? {
-    original: query,
-    rewritten: query.trim(),
-    source: "prompt"
-  } : rewriteSearchQuery(query);
-  const effective = rewrite.rewritten;
-  if (!effective.trim() || store.cardCount() === 0) {
-    return { hits: [], context: "", rewrite };
-  }
-  const hits = rankQuery(store, effective, k, exclude, options.minScore);
-  const context = formatContext(hits, maxChars);
-  return {
-    hits,
-    context,
-    rewrite,
-    channels: [
-      {
-        name: "fts",
-        query_chars: effective.length,
-        query_head: effective.slice(0, 120).replace(/\n/g, "\\n"),
-        n_hits: hits.length,
-        slugs: hits.map((h) => h.slug)
-      }
-    ]
-  };
-}
-function formatContext(hits, maxChars) {
-  if (hits.length === 0)
-    return "";
-  const parts = [
-    "MUTON CARDS (trusted shared memory — prefer these facts when they apply)"
-  ];
-  let used = parts[0].length;
-  for (const hit of hits) {
-    const block = ["", `### ${hit.title}`, `Use when: ${hit.use_when}`, hit.body].join(`
-`);
-    if (used + block.length > maxChars)
-      break;
-    parts.push(block);
-    used += block.length;
-  }
-  return parts.join(`
-`);
-}
-
 // src/store/index.ts
-import { mkdirSync, readdirSync, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join as join2 } from "node:path";
 
 // node_modules/yaml/dist/index.js
@@ -14451,8 +14087,196 @@ function sessionStatePath(home = mutonHome()) {
   return join(home, "session-injected.json");
 }
 
+// src/store/paths.ts
+var UNCATEGORIZED_PATH = "uncategorized";
+var MAX_PATH_DEPTH = 3;
+var MAX_SEGMENT_LEN = 48;
+var MAX_PATHS_PER_CARD = 6;
+function normalizePath(raw) {
+  const cleaned = raw.trim().toLowerCase().replace(/\\/g, "/").replace(/[^a-z0-9/_-]+/g, "-").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  if (!cleaned)
+    return null;
+  const segments = cleaned.split("/").filter(Boolean);
+  if (segments.length === 0)
+    return null;
+  const clipped = segments.slice(0, MAX_PATH_DEPTH).map((s) => {
+    const t = s.replace(/^-+|-+$/g, "").slice(0, MAX_SEGMENT_LEN);
+    return t || "x";
+  });
+  return clipped.join("/");
+}
+function normalizePaths(raw) {
+  const out = [];
+  const seen = new Set;
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(/[,;]/).map((s) => s.trim()) : [];
+  for (const item of list) {
+    if (typeof item !== "string")
+      continue;
+    const p = normalizePath(item);
+    if (!p || seen.has(p))
+      continue;
+    seen.add(p);
+    out.push(p);
+    if (out.length >= MAX_PATHS_PER_CARD)
+      break;
+  }
+  if (out.length === 0)
+    return [UNCATEGORIZED_PATH];
+  return out;
+}
+function buildTree(pathCounts, rootPrefix = "", depth = 2) {
+  const prefix = rootPrefix.replace(/^\/+|\/+$/g, "");
+  const childSegCounts = new Map;
+  for (const [path, n] of pathCounts) {
+    if (prefix) {
+      if (path === prefix)
+        continue;
+      if (!path.startsWith(`${prefix}/`))
+        continue;
+      const rest = path.slice(prefix.length + 1);
+      const seg = rest.split("/")[0];
+      const key = `${prefix}/${seg}`;
+      const cur = childSegCounts.get(key) ?? { direct: 0, under: 0 };
+      if (rest === seg)
+        cur.direct += n;
+      cur.under += n;
+      childSegCounts.set(key, cur);
+    } else {
+      const seg = path.split("/")[0];
+      const cur = childSegCounts.get(seg) ?? { direct: 0, under: 0 };
+      if (path === seg)
+        cur.direct += n;
+      cur.under += n;
+      childSegCounts.set(seg, cur);
+    }
+  }
+  const nodes = [];
+  for (const [path, { under }] of [...childSegCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const node = {
+      path,
+      count: under,
+      children: depth > 1 ? buildTree(pathCounts, path, depth - 1) : []
+    };
+    nodes.push(node);
+  }
+  return nodes;
+}
+function formatTree(nodes, indent = 0) {
+  if (nodes.length === 0)
+    return "(empty hive — no categorized cards yet)";
+  const lines = [];
+  for (const n of nodes) {
+    lines.push(`${"  ".repeat(indent)}${n.path}/  (${n.count})`);
+    if (n.children.length)
+      lines.push(formatTree(n.children, indent + 1));
+  }
+  return lines.join(`
+`);
+}
+
 // src/store/sqlite.ts
 import { DatabaseSync } from "node:sqlite";
+
+// src/search/bm25.ts
+var STOPWORDS = new Set([
+  "a",
+  "an",
+  "the",
+  "and",
+  "or",
+  "but",
+  "if",
+  "then",
+  "else",
+  "at",
+  "by",
+  "for",
+  "with",
+  "from",
+  "into",
+  "to",
+  "of",
+  "in",
+  "on",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "i",
+  "you",
+  "he",
+  "she",
+  "we",
+  "they",
+  "me",
+  "my",
+  "your",
+  "our",
+  "can",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "please",
+  "how",
+  "what",
+  "which",
+  "who",
+  "why",
+  "where",
+  "not",
+  "no",
+  "so",
+  "just",
+  "also",
+  "than",
+  "too",
+  "very",
+  "http",
+  "https",
+  "www"
+]);
+var MAX_TOKENS = 12;
+function tokenize(text) {
+  const seen = new Set;
+  const tokens = [];
+  const cleaned = text.toLowerCase().replace(/[^a-z0-9\s-]/g, " ").replace(/-/g, " ");
+  for (const raw of cleaned.split(/\s+/)) {
+    const t = raw.trim();
+    if (t.length < 2 || STOPWORDS.has(t) || seen.has(t))
+      continue;
+    seen.add(t);
+    tokens.push(t);
+    if (tokens.length >= MAX_TOKENS)
+      break;
+  }
+  return tokens;
+}
+function toFtsQuery(text) {
+  const tokens = tokenize(text);
+  if (tokens.length === 0)
+    return "";
+  return tokens.map((t) => `"${t.replaceAll('"', "")}"`).join(" OR ");
+}
+
+// src/store/sqlite.ts
 var SCHEMA = `
 CREATE TABLE IF NOT EXISTS cards (
   slug TEXT PRIMARY KEY,
@@ -14476,6 +14300,12 @@ CREATE TABLE IF NOT EXISTS card_embeddings (
   dims INTEGER NOT NULL,
   vector BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS card_paths (
+  slug TEXT NOT NULL,
+  path TEXT NOT NULL,
+  PRIMARY KEY (slug, path)
+);
+CREATE INDEX IF NOT EXISTS idx_card_paths_path ON card_paths(path);
 `;
 
 class CardIndex {
@@ -14514,14 +14344,46 @@ class CardIndex {
     this.db.prepare(`DELETE FROM cards WHERE slug = ?`).run(slug);
     this.db.prepare(`DELETE FROM cards_fts WHERE slug = ?`).run(slug);
     this.db.prepare(`DELETE FROM card_embeddings WHERE slug = ?`).run(slug);
+    this.db.prepare(`DELETE FROM card_paths WHERE slug = ?`).run(slug);
   }
   clear() {
-    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts; DELETE FROM card_embeddings;`);
+    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts; DELETE FROM card_embeddings; DELETE FROM card_paths;`);
   }
   rebuild(cards) {
     this.clear();
     for (const card of cards)
       this.upsert(card);
+  }
+  setPaths(slug, paths) {
+    this.db.prepare(`DELETE FROM card_paths WHERE slug = ?`).run(slug);
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO card_paths (slug, path) VALUES (?, ?)`);
+    for (const path of paths) {
+      insert.run(slug, path);
+    }
+  }
+  addPaths(slug, paths) {
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO card_paths (slug, path) VALUES (?, ?)`);
+    for (const path of paths) {
+      insert.run(slug, path);
+    }
+  }
+  getPaths(slug) {
+    const rows = this.db.prepare(`SELECT path FROM card_paths WHERE slug = ? ORDER BY path`).all(slug);
+    return rows.map((r) => r.path);
+  }
+  pathCounts() {
+    const rows = this.db.prepare(`SELECT path, COUNT(*) AS n FROM card_paths GROUP BY path`).all();
+    return new Map(rows.map((r) => [r.path, r.n]));
+  }
+  listByPath(path) {
+    const rows = this.db.prepare(`SELECT DISTINCT slug FROM card_paths
+         WHERE path = ? OR path LIKE ?
+         ORDER BY slug`).all(path, `${path}/%`);
+    return rows.map((r) => r.slug);
+  }
+  totalPathAssignments() {
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM card_paths`).get();
+    return row.n;
   }
   search(query, limit = 20) {
     const trimmed = query.trim();
@@ -14602,7 +14464,7 @@ class CardStore {
     for (const file of files) {
       const slug = file.replace(/\.md$/, "");
       try {
-        const markdown = readFileSync2(join2(dir, file), "utf8");
+        const markdown = readFileSync(join2(dir, file), "utf8");
         cards.push(parseCard(markdown, slug));
       } catch {}
     }
@@ -14610,7 +14472,7 @@ class CardStore {
   }
   read(slug) {
     try {
-      const markdown = readFileSync2(join2(cardsDir(this.home), `${slug}.md`), "utf8");
+      const markdown = readFileSync(join2(cardsDir(this.home), `${slug}.md`), "utf8");
       return parseCard(markdown, slug);
     } catch {
       return null;
@@ -14713,9 +14575,66 @@ class CardStore {
   rebuildIndex() {
     this.getIndex().rebuild(this.listCards());
   }
+  setPaths(slug, paths) {
+    const normalized = normalizePaths(paths ?? []);
+    this.getIndex().setPaths(slug, normalized);
+    return normalized;
+  }
+  addPaths(slug, paths) {
+    const normalized = normalizePaths(paths ?? []);
+    const existing = this.getIndex().getPaths(slug);
+    const toAdd = normalized.length === 1 && normalized[0] === UNCATEGORIZED_PATH && existing.some((p) => p !== UNCATEGORIZED_PATH) ? [] : normalized;
+    if (toAdd.length)
+      this.getIndex().addPaths(slug, toAdd);
+    const after = this.getIndex().getPaths(slug);
+    if (after.includes(UNCATEGORIZED_PATH) && after.some((p) => p !== UNCATEGORIZED_PATH)) {
+      const cleaned = after.filter((p) => p !== UNCATEGORIZED_PATH);
+      this.getIndex().setPaths(slug, cleaned);
+      return cleaned;
+    }
+    return after.length ? after : [UNCATEGORIZED_PATH];
+  }
+  getPaths(slug) {
+    const paths = this.getIndex().getPaths(slug);
+    return paths.length ? paths : [];
+  }
+  tree(opts) {
+    const depth = opts?.depth ?? 2;
+    const rawRoot = opts?.path?.trim() ?? "";
+    const root = rawRoot ? normalizePaths([rawRoot]).find((p) => p !== UNCATEGORIZED_PATH) ?? normalizePathLoose(rawRoot) : "";
+    const counts = this.getIndex().pathCounts();
+    const nodes = buildTree(counts, root, depth);
+    const text = this.cardCount() === 0 ? "(empty hive — 0 cards)" : counts.size === 0 ? `(${this.cardCount()} cards, none categorized yet)` : nodes.length === 0 && root ? `(no cards under ${root}/)` : formatTree(nodes);
+    return {
+      total_cards: this.cardCount(),
+      path_assignments: this.getIndex().totalPathAssignments(),
+      root: root || "/",
+      nodes,
+      text
+    };
+  }
+  ls(pathRaw) {
+    const path = normalizePaths([pathRaw])[0] ?? UNCATEGORIZED_PATH;
+    const slugs = this.getIndex().listByPath(path);
+    const cards = [];
+    for (const slug of slugs) {
+      const card = this.read(slug);
+      if (!card)
+        continue;
+      cards.push({
+        slug: card.slug,
+        title: card.title,
+        use_when: card.use_when
+      });
+    }
+    return { path, cards };
+  }
 }
 function combinedText(fields) {
   return `${fields.title} ${fields.use_when} ${fields.body}`;
+}
+function normalizePathLoose(raw) {
+  return normalizePath(raw) ?? UNCATEGORIZED_PATH;
 }
 function tokenOverlap(a, b) {
   const ta = new Set(a.toLowerCase().split(/\W+/).filter(Boolean));
@@ -14727,6 +14646,313 @@ function tokenOverlap(a, b) {
     if (tb.has(t))
       inter += 1;
   return inter / Math.max(ta.size, tb.size);
+}
+
+// src/cli/commands/get.ts
+async function cmdGet(args) {
+  let json = false;
+  const slugParts = [];
+  for (const a of args) {
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
+    slugParts.push(a);
+  }
+  const slug = slugParts.join(" ").trim();
+  if (!slug) {
+    console.error("Usage: muton get [--json] <slug>");
+    process.exit(1);
+  }
+  const store = new CardStore;
+  try {
+    const card = store.read(slug);
+    if (!card) {
+      if (json) {
+        console.log(JSON.stringify({ error: "not_found", slug }));
+      } else {
+        console.error(`Card not found: ${slug}`);
+      }
+      process.exit(1);
+    }
+    const paths = store.getPaths(slug);
+    if (json) {
+      console.log(JSON.stringify({ ...card, paths }));
+      return;
+    }
+    console.log(`# ${card.title}`);
+    console.log(`slug: ${card.slug}`);
+    console.log(`paths: ${paths.join(", ") || "(none)"}`);
+    console.log(`use_when: ${card.use_when}`);
+    console.log(`created_at: ${card.created_at}`);
+    console.log(`updated_at: ${card.updated_at}`);
+    console.log("");
+    console.log(card.body);
+  } finally {
+    store.close();
+  }
+}
+
+// src/hooks/normalize.ts
+function asRecord(input) {
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    return input;
+  }
+  return {};
+}
+function str(v) {
+  return typeof v === "string" ? v : undefined;
+}
+function normalizeHookInput(eventName, rawInput, hostHint) {
+  const raw = asRecord(rawInput);
+  const name = (str(raw.hook_event_name) ?? eventName).toLowerCase();
+  const sessionId = str(raw.session_id) ?? str(raw.conversation_id) ?? str(raw.sessionId) ?? "unknown";
+  const cwd = str(raw.cwd) ?? (Array.isArray(raw.workspace_roots) ? str(raw.workspace_roots[0]) : undefined) ?? process.env.CURSOR_PROJECT_DIR ?? process.env.CLAUDE_PROJECT_DIR ?? process.cwd();
+  const transcriptPath = str(raw.transcript_path) ?? str(raw.transcriptPath) ?? process.env.CURSOR_TRANSCRIPT_PATH ?? null;
+  if (name === "sessionstart" || name === "session_start" || name === "session-start" || eventName === "session-start") {
+    return {
+      type: "session-start",
+      sessionId,
+      cwd,
+      workspaceRoots: Array.isArray(raw.workspace_roots) ? raw.workspace_roots.filter((x) => typeof x === "string") : undefined,
+      raw
+    };
+  }
+  if (name === "beforesubmitprompt" || name === "userpromptsubmit" || name === "prompt-submit" || eventName === "prompt-submit") {
+    const prompt = str(raw.prompt) ?? str(raw.user_prompt) ?? str(raw.message) ?? str(raw.content) ?? "";
+    return { type: "prompt-submit", sessionId, prompt, cwd, raw };
+  }
+  if (name === "sessionend" || name === "session_end" || name === "session_shutdown" || name === "session-end" || eventName === "session-end") {
+    return {
+      type: "session-end",
+      sessionId,
+      transcriptPath,
+      cwd,
+      host: hostHint,
+      raw
+    };
+  }
+  return { type: "unknown", raw };
+}
+
+// src/hooks/prompt-submit.ts
+import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+
+// src/search/rerank.ts
+function rerank(hits, query) {
+  const terms = tokenize(query);
+  if (terms.length === 0)
+    return [];
+  const distinctive = terms.filter((t) => t.length >= 5);
+  const coverageTerms = distinctive.length > 0 ? distinctive : terms;
+  const minMatches = coverageTerms.length >= 3 ? 2 : 1;
+  const now = Date.now();
+  const ranked = [];
+  for (const hit of hits) {
+    const title = hit.title.toLowerCase();
+    const useWhen = hit.use_when.toLowerCase();
+    const hay = `${title} ${useWhen} ${hit.body.toLowerCase()}`;
+    const coverage = new Set(coverageTerms);
+    let boost = 0;
+    let matched = 0;
+    for (const term of terms) {
+      if (!hay.includes(term))
+        continue;
+      if (coverage.has(term))
+        matched += 1;
+      if (title.includes(term))
+        boost += 2;
+      if (useWhen.includes(term))
+        boost += 1.5;
+    }
+    if (matched < minMatches)
+      continue;
+    const ageMs = Math.max(0, now - Date.parse(hit.updated_at || hit.created_at));
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    const recency = Math.max(0, 1 - ageDays / 365);
+    ranked.push({ ...hit, score: -hit.bm25 + boost + recency * 0.5 + matched });
+  }
+  return ranked.sort((a, b) => b.score - a.score);
+}
+
+// src/search/rewrite.ts
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
+var BOILERPLATE = new Set([
+  "formula",
+  "database",
+  "environment",
+  "sqlite",
+  "sqlite3",
+  "python",
+  "program",
+  "programs",
+  "blocked",
+  "paths",
+  "query",
+  "statement",
+  "prints",
+  "json",
+  "rows",
+  "ordinary",
+  "sql",
+  "inspect",
+  "tables",
+  "example",
+  "sqlite_master",
+  "pragma",
+  "table_info",
+  "app",
+  "question",
+  "required",
+  "output",
+  "block",
+  "scored",
+  "file",
+  "answer",
+  "write",
+  "exactly",
+  "object",
+  "verifier",
+  "strips",
+  "whitespace",
+  "compares",
+  "notes",
+  "sessions",
+  "cannot",
+  "exclusively",
+  "pragma"
+]);
+var MAX_CONTENT_TERMS = 16;
+var MAX_PHRASE_CHARS = 180;
+function resolveQuestionText(prompt) {
+  const candidates = [process.env.MUTON_QUESTION_PATH, "/app/question.md"].filter((p) => Boolean(p));
+  for (const path of candidates) {
+    try {
+      if (existsSync(path)) {
+        const text = readFileSync2(path, "utf8");
+        if (text.trim())
+          return { text, source: "question_file" };
+      }
+    } catch {}
+  }
+  const extracted = extractQuestionFromPrompt(prompt);
+  if (extracted)
+    return { text: extracted, source: "prompt_question" };
+  return { text: prompt, source: "prompt" };
+}
+function extractQuestionFromPrompt(prompt) {
+  const stripped = stripBoilerplateSections(prompt);
+  const qBlock = stripped.match(/(?:^|\n)\s*Question\s+\d+\s+of\s+\d+\s*\n+([\s\S]*?)(?=\n\s*Required output|\n\s*\{|$)/i);
+  if (qBlock?.[1]?.trim())
+    return qBlock[1].trim();
+  const lines = stripped.split(`
+`).map((l) => l.trim()).filter(Boolean).filter((l) => !l.startsWith("#") && !l.startsWith("```") && !l.startsWith("-"));
+  const interesting = lines.filter((l) => l.length > 20 && /[?]/.test(l) || /^(please|what|where|when|which|who|how|calculate|give|list|find)\b/i.test(l));
+  if (interesting.length === 1)
+    return interesting[0];
+  if (interesting.length > 1)
+    return interesting.join(" ");
+  return null;
+}
+function stripBoilerplateSections(text) {
+  return text.replace(/```[\s\S]*?```/g, " ").replace(/Required output[\s\S]*$/i, " ").replace(/The only scored file[\s\S]*$/i, " ").replace(/You cannot open the database[\s\S]*?PRAGMA[^\n]*/gi, " ").replace(/`db query[^`]*`/gi, " ").replace(/db query\s+"[^"]*"/gi, " ");
+}
+function cleanQuestionBody(text) {
+  return stripBoilerplateSections(text).replace(/Question\s+\d+\s+of\s+\d+/gi, " ").replace(/\{\s*"answer"[\s\S]*$/i, " ").replace(/\s+/g, " ").trim();
+}
+function rewriteSearchQuery(prompt) {
+  const original = prompt ?? "";
+  const { text, source } = resolveQuestionText(original);
+  const cleaned = cleanQuestionBody(text);
+  if (cleaned && cleaned.length <= MAX_PHRASE_CHARS && (source === "question_file" || source === "prompt_question")) {
+    const phrase = cleaned.replace(/^(please|pls)\s+/i, "").trim();
+    if (phrase.split(/\s+/).length >= 3) {
+      return { original, rewritten: phrase, source };
+    }
+  }
+  const terms = tokenize(cleaned || original).filter((t) => !BOILERPLATE.has(t));
+  let rewritten = terms.slice(0, MAX_CONTENT_TERMS).join(" ").trim();
+  if (!rewritten) {
+    rewritten = tokenize(stripBoilerplateSections(original)).filter((t) => !BOILERPLATE.has(t)).slice(0, MAX_CONTENT_TERMS).join(" ").trim();
+  }
+  if (!rewritten) {
+    rewritten = tokenize(original).slice(0, MAX_CONTENT_TERMS).join(" ");
+  }
+  return { original, rewritten, source };
+}
+
+// src/search/index.ts
+var DEFAULT_K = 5;
+var DEFAULT_MAX_CHARS = 1e5;
+function envFlag(name) {
+  const v = process.env[name];
+  return v === "1" || v === "true";
+}
+function envInt(name, fallback) {
+  const v = process.env[name];
+  if (v === undefined || v === "")
+    return fallback;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function rankQuery(store, query, k, exclude, minScore) {
+  if (!query.trim() || store.cardCount() === 0 || k <= 0)
+    return [];
+  const raw = store.searchRaw(query, Math.max(k * 4, 20));
+  let ranked = rerank(raw, query).filter((h) => !exclude.has(h.slug));
+  if (minScore !== undefined) {
+    ranked = ranked.filter((h) => h.score >= minScore);
+  }
+  return ranked.slice(0, k);
+}
+function searchCards(store, query, options = {}) {
+  const k = options.k ?? DEFAULT_K;
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
+  const exclude = new Set(options.excludeSlugs ?? []);
+  const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
+  const rewrite = skipRewrite ? {
+    original: query,
+    rewritten: query.trim(),
+    source: "prompt"
+  } : rewriteSearchQuery(query);
+  const effective = rewrite.rewritten;
+  if (!effective.trim() || store.cardCount() === 0) {
+    return { hits: [], context: "", rewrite };
+  }
+  const hits = rankQuery(store, effective, k, exclude, options.minScore);
+  const context = formatContext(hits, maxChars);
+  return {
+    hits,
+    context,
+    rewrite,
+    channels: [
+      {
+        name: "fts",
+        query_chars: effective.length,
+        query_head: effective.slice(0, 120).replace(/\n/g, "\\n"),
+        n_hits: hits.length,
+        slugs: hits.map((h) => h.slug)
+      }
+    ]
+  };
+}
+function formatContext(hits, maxChars) {
+  if (hits.length === 0)
+    return "";
+  const parts = [
+    "MUTON CARDS (trusted shared memory — prefer these facts when they apply)"
+  ];
+  let used = parts[0].length;
+  for (const hit of hits) {
+    const block = ["", `### ${hit.title}`, `Use when: ${hit.use_when}`, hit.body].join(`
+`);
+    if (used + block.length > maxChars)
+      break;
+    parts.push(block);
+    used += block.length;
+  }
+  return parts.join(`
+`);
 }
 
 // src/hooks/session-start.ts
@@ -15151,6 +15377,44 @@ function cmdInstall(args) {
   const results = installHosts(targets);
   for (const [host, path] of Object.entries(results)) {
     console.log(`Installed ${host}: ${path}`);
+  }
+}
+
+// src/cli/commands/ls.ts
+async function cmdLs(args) {
+  let json = false;
+  const pathParts = [];
+  for (const a of args) {
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
+    pathParts.push(a);
+  }
+  const path = pathParts.join(" ").trim();
+  if (!path) {
+    console.error("Usage: muton ls [--json] <path>");
+    process.exit(1);
+  }
+  const store = new CardStore;
+  try {
+    const listing = store.ls(path);
+    if (json) {
+      console.log(JSON.stringify(listing));
+      return;
+    }
+    if (listing.cards.length === 0) {
+      console.log(`No cards under ${listing.path}/`);
+      return;
+    }
+    console.log(`${listing.path}/ (${listing.cards.length})`);
+    for (const c of listing.cards) {
+      console.log(`- ${c.slug}`);
+      console.log(`  ${c.title}`);
+      console.log(`  use_when: ${c.use_when}`);
+    }
+  } finally {
+    store.close();
   }
 }
 
@@ -30076,14 +30340,22 @@ async function proposeCard(store, input, opts = {}) {
   const body = input.body.trim();
   const proposal = { title, use_when, body };
   const now = opts.now ?? new Date;
+  const applyPaths = (card, merged) => {
+    if (merged)
+      store.addPaths(card.slug, input.paths);
+    else
+      store.setPaths(card.slug, input.paths);
+    return { card, merged };
+  };
   if (opts.lexicalOnly || !mergeAgentEnabled()) {
     const before = store.cardCount();
     const card = store.upsert(proposal, now);
-    return { card, merged: store.cardCount() === before };
+    return applyPaths(card, store.cardCount() === before);
   }
   const k = opts.k ?? envInt3("MUTON_MERGE_K", DEFAULT_MERGE_K);
   if (k <= 0 || store.cardCount() === 0) {
-    return { card: store.writeNew(proposal, now), merged: false };
+    const card = store.writeNew(proposal, now);
+    return applyPaths(card, false);
   }
   let neighbors = [];
   try {
@@ -30098,12 +30370,12 @@ async function proposeCard(store, input, opts = {}) {
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
   if (neighbors.length === 0) {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
   const allowed = new Set(neighbors.map((n) => n.slug));
   const complete = opts.completer ?? createCompleter();
@@ -30114,18 +30386,19 @@ async function proposeCard(store, input, opts = {}) {
     });
     const decision = parseMergeDecision(raw, allowed);
     if (!decision || decision.action === "create") {
-      return { card: store.writeNew(proposal, now), merged: false };
+      const card = store.writeNew(proposal, now);
+      return applyPaths(card, false);
     }
     const card = store.update(decision.slug, {
       title: decision.title,
       use_when: decision.use_when,
       body: decision.body
     }, now);
-    return { card, merged: true };
+    return applyPaths(card, true);
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
 }
 
@@ -30145,12 +30418,55 @@ async function startMcpServer(home) {
       ]
     };
   });
+  server.tool("tree", "High-level taxonomy directory of the Muton hive (counts, no card bodies)", {
+    path: string2().optional().describe("Optional path prefix to list under"),
+    depth: number2().optional().describe("Tree depth (default 2)")
+  }, async ({ path, depth }) => {
+    const tree = store.tree({ path, depth });
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(tree)
+        }
+      ]
+    };
+  });
+  server.tool("ls", "List card slugs/titles under a taxonomy path (no bodies)", { path: string2().describe("Taxonomy path, e.g. schema or schema/joins") }, async ({ path }) => {
+    const listing = store.ls(path);
+    return {
+      content: [{ type: "text", text: JSON.stringify(listing) }]
+    };
+  });
+  server.tool("get", "Fetch one Muton card by slug (full body + paths)", { slug: string2().describe("Card slug") }, async ({ slug }) => {
+    const card = store.read(slug);
+    if (!card) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ error: "not_found", slug })
+          }
+        ]
+      };
+    }
+    const paths = store.getPaths(slug);
+    return {
+      content: [{ type: "text", text: JSON.stringify({ ...card, paths }) }]
+    };
+  });
   server.tool("propose", "Create or merge a durable Card in the shared hive (vector neighbors + agent expand)", {
     title: string2(),
     use_when: string2(),
-    body: string2()
-  }, async ({ title, use_when, body }) => {
-    const { card, merged } = await proposeCard(store, { title, use_when, body });
+    body: string2(),
+    paths: array(string2()).optional().describe("Optional taxonomy paths (multi-parent)")
+  }, async ({ title, use_when, body, paths }) => {
+    const { card, merged } = await proposeCard(store, {
+      title,
+      use_when,
+      body,
+      paths
+    });
     try {
       await store.embedCard(card);
     } catch {}
@@ -30158,7 +30474,7 @@ async function startMcpServer(home) {
       content: [
         {
           type: "text",
-          text: `${merged ? "Merged" : "Stored"} card ${card.slug}`
+          text: `${merged ? "Merged" : "Stored"} card ${card.slug} paths=[${store.getPaths(card.slug).join(",")}]`
         }
       ]
     };
@@ -30182,24 +30498,27 @@ async function cmdPropose(args) {
   const title = flag(args, "--title");
   const useWhen = flag(args, "--use-when");
   const body = flag(args, "--body");
+  const pathsRaw = flag(args, "--paths");
   if (!title || !useWhen || !body) {
-    console.error("Usage: muton propose --title <t> --use-when <u> --body <b>");
+    console.error("Usage: muton propose --title <t> --use-when <u> --body <b> [--paths p1,p2]");
     process.exit(1);
   }
+  const paths = pathsRaw ? pathsRaw.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
   const store = new CardStore;
   try {
     const { card, merged } = await proposeCard(store, {
       title,
       use_when: useWhen,
-      body
+      body,
+      paths
     });
     try {
       await store.embedCard(card);
     } catch (err) {
-      console.error(`${merged ? "Merged" : "Wrote"} ${card.slug} (embed failed: ${err instanceof Error ? err.message : err})`);
+      console.error(`${merged ? "Merged" : "Wrote"} ${card.slug} paths=[${store.getPaths(card.slug).join(",")}] (embed failed: ${err instanceof Error ? err.message : err})`);
       return;
     }
-    console.log(`${merged ? "Merged" : "Wrote"} ${card.slug}`);
+    console.log(`${merged ? "Merged" : "Wrote"} ${card.slug} paths=[${store.getPaths(card.slug).join(",")}]`);
   } finally {
     store.close();
   }
@@ -30218,8 +30537,16 @@ Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
-  "body": "the durable fact — concrete and reusable"
+  "body": "the durable fact — concrete and reusable",
+  "paths": ["schema/qualifying", "lookup"]
 }
+
+Taxonomy paths (soft directory for browsing the hive later):
+- paths is a JSON array of 1–3 slash-separated folders (multi-parent OK).
+- Invent paths that fit the fact's domain — do not force unrelated labels.
+- Example top-level folders when they fit: schema, encoding, lookup, episode, preference, null-event.
+- Add a second segment when useful (e.g. schema/joins, lookup/circuits). For other tasks invent sensible roots (e.g. api/auth, deploy/k8s).
+- Prefer stable reusable folders over one-off episode names when the fact is general.
 
 Rules:
 - Propose only durable facts that would help another agent later.
@@ -30227,7 +30554,7 @@ Rules:
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
 - Near-duplicates may be merged into existing hive cards later; prefer distinct durable facts. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
 - Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
-- title and use_when are mandatory and non-empty. body is the durable fact.`;
+- title and use_when are mandatory and non-empty. body is the durable fact. paths should be present when you can classify the card.`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.home ?? mutonHome();
@@ -30262,7 +30589,7 @@ async function writeProposedCards(store, proposals, opts = {}) {
       skipped.push(title || "(invalid)");
       continue;
     }
-    const outcome = await proposeCard(store, { title, use_when: useWhen, body }, { completer: opts.completer, lexicalOnly: opts.lexicalOnly });
+    const outcome = await proposeCard(store, { title, use_when: useWhen, body, paths: proposal.paths }, { completer: opts.completer, lexicalOnly: opts.lexicalOnly });
     written.push(outcome.card);
     if (outcome.merged)
       merged.push(outcome.card);
@@ -30388,11 +30715,14 @@ function filterProposals(parsed) {
     if (typeof o.title !== "string" || typeof o.use_when !== "string" || typeof o.body !== "string") {
       continue;
     }
-    out.push({
+    const item = {
       title: o.title,
       use_when: o.use_when,
       body: o.body
-    });
+    };
+    if (o.paths !== undefined)
+      item.paths = Array.isArray(o.paths) ? o.paths.filter((x) => typeof x === "string") : typeof o.paths === "string" ? [o.paths] : undefined;
+    out.push(item);
   }
   return out;
 }
@@ -30424,8 +30754,8 @@ async function cmdReflect(args) {
 }
 
 // src/cli/commands/search.ts
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync7 } from "node:fs";
 import { createHash } from "node:crypto";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync7 } from "node:fs";
 import { join as join10 } from "node:path";
 function logLine(file, payload) {
   const home = process.env.MUTON_HOME;
@@ -30519,13 +30849,53 @@ async function cmdSearch(args) {
   }
 }
 
+// src/cli/commands/tree.ts
+async function cmdTree(args) {
+  let json = false;
+  let path;
+  let depth = 2;
+  for (let i = 0;i < args.length; i++) {
+    const a = args[i];
+    if (a === "--json") {
+      json = true;
+      continue;
+    }
+    if (a === "--depth" && args[i + 1]) {
+      depth = Number.parseInt(args[++i], 10) || 2;
+      continue;
+    }
+    if (a === "--path" && args[i + 1]) {
+      path = args[++i];
+      continue;
+    }
+    if (!a.startsWith("-") && !path) {
+      path = a;
+    }
+  }
+  const store = new CardStore;
+  try {
+    const tree = store.tree({ path, depth });
+    if (json) {
+      console.log(JSON.stringify(tree));
+      return;
+    }
+    console.log(`hive: ${tree.total_cards} cards, ${tree.path_assignments} path assignments, root=${tree.root}`);
+    console.log(tree.text);
+  } finally {
+    store.close();
+  }
+}
+
 // src/cli/index.ts
 var HELP = `muton \u2014 shared hive memory for coding agents
 
 Usage:
   muton install --target cursor,claude,codex,pi
   muton search [--json] <query>
-  muton propose --title <t> --use-when <u> --body <b>
+  muton tree [--json] [--depth N] [--path <path>]
+  muton ls [--json] <path>
+  muton get [--json] <slug>
+  muton propose --title <t> --use-when <u> --body <b> [--paths p1,p2]
   muton reflect --transcript <path> [--cwd <dir>] [--host <name>] [--session-id <id>]
   muton hook <session-start|prompt-submit|session-end> [--host <name>]
   muton mcp
@@ -30538,6 +30908,15 @@ async function main() {
       break;
     case "search":
       await cmdSearch(rest);
+      break;
+    case "tree":
+      await cmdTree(rest);
+      break;
+    case "ls":
+      await cmdLs(rest);
+      break;
+    case "get":
+      await cmdGet(rest);
       break;
     case "propose":
       await cmdPropose(rest);

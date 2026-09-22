@@ -9,8 +9,16 @@ Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
-  "body": "the durable fact — concrete and reusable"
+  "body": "the durable fact — concrete and reusable",
+  "paths": ["schema/qualifying", "lookup"]
 }
+
+Taxonomy paths (soft directory for browsing the hive later):
+- paths is a JSON array of 1–3 slash-separated folders (multi-parent OK).
+- Invent paths that fit the fact's domain — do not force unrelated labels.
+- Example top-level folders when they fit: schema, encoding, lookup, episode, preference, null-event.
+- Add a second segment when useful (e.g. schema/joins, lookup/circuits). For other tasks invent sensible roots (e.g. api/auth, deploy/k8s).
+- Prefer stable reusable folders over one-off episode names when the fact is general.
 
 Rules:
 - Propose only durable facts that would help another agent later.
@@ -18,7 +26,7 @@ Rules:
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
 - Near-duplicates may be merged into existing hive cards later; prefer distinct durable facts. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
 - Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
-- title and use_when are mandatory and non-empty. body is the durable fact.`;
+- title and use_when are mandatory and non-empty. body is the durable fact. paths should be present when you can classify the card.`;
 
 /**
  * Default prompt, plus the first extra REFLECTION.md found (project, then home).

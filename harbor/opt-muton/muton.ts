@@ -1,4 +1,4 @@
-// Muton Pi extension — agentic vector search tool + silent reflect
+// Muton Pi extension — vector search + taxonomy browse + silent reflect
 import { execFileSync, spawn } from "node:child_process";
 import {
   appendFileSync,
@@ -14,9 +14,10 @@ const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10)
 
 const SEARCH_GUIDELINES = [
   "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible. The db can be queried at most 4 times per question.",
+  "Start with muton_tree once per step when unsure what the hive holds. If the hive is empty or tiny, skip further Muton browse/search and inspect the DB. If it has useful folders, use muton_ls / muton_get for known categories and muton_search for ad-hoc semantic lookup.",
   "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
-  "If muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
-  "Only fall back to sqlite_master / PRAGMA when muton_search returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
+  "If muton_search or muton_get returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
+  "Only fall back to sqlite_master / PRAGMA when Muton returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
   "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_search for the same topic.",
 ];
 
@@ -102,8 +103,9 @@ export default function (pi) {
     });
     const tip = [
       "",
-      "MUTON HIVE (vector search — call muton_search; nothing is auto-injected)",
-      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema from muton_search and minimize db query count.",
+      "MUTON HIVE (browse + vector search — nothing is auto-injected)",
+      "Tools: muton_tree (map), muton_ls (list under a path), muton_get (one card), muton_search (semantic).",
+      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema and minimize db query count.",
       ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
     ].join("\n");
     return {
@@ -112,7 +114,8 @@ export default function (pi) {
   });
 
   const Type = loadType();
-  const parameters = Type
+
+  const searchParams = Type
     ? Type.Object({
         query: Type.String({
           description:
@@ -140,6 +143,229 @@ export default function (pi) {
         required: ["query"],
       };
 
+  const treeParams = Type
+    ? Type.Object({
+        path: Type.Optional(
+          Type.String({
+            description: "Optional path prefix (e.g. schema). Omit for full tree.",
+          }),
+        ),
+        depth: Type.Optional(
+          Type.Number({ description: "Tree depth (default 2)" }),
+        ),
+      })
+    : {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Optional path prefix" },
+          depth: { type: "number", description: "Tree depth (default 2)" },
+        },
+      };
+
+  const lsParams = Type
+    ? Type.Object({
+        path: Type.String({
+          description: "Taxonomy path to list, e.g. schema or schema/joins",
+        }),
+      })
+    : {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Taxonomy path to list" },
+        },
+        required: ["path"],
+      };
+
+  const getParams = Type
+    ? Type.Object({
+        slug: Type.String({ description: "Card slug to fetch" }),
+      })
+    : {
+        type: "object",
+        properties: {
+          slug: { type: "string", description: "Card slug to fetch" },
+        },
+        required: ["slug"],
+      };
+
+  pi.registerTool({
+    name: "muton_tree",
+    label: "Muton Tree",
+    description:
+      "Show the Muton hive taxonomy directory (folder counts, no card bodies). Use first to see whether the hive is empty and what categories exist.",
+    promptSnippet: "Browse Muton hive directory map (counts only)",
+    promptGuidelines: SEARCH_GUIDELINES,
+    parameters: treeParams,
+    async execute(_toolCallId, params) {
+      const path = String(params?.path ?? "").trim();
+      const depth =
+        typeof params?.depth === "number" && params.depth > 0
+          ? Math.min(params.depth, 4)
+          : 2;
+      try {
+        const args = ["tree", "--json", "--depth", String(depth)];
+        if (path) args.push("--path", path);
+        const out = await runMuton(args);
+        let data;
+        try {
+          data = JSON.parse(out);
+        } catch {
+          data = null;
+        }
+        logHook({
+          event: "muton_tree",
+          path: path || "/",
+          depth,
+          total_cards: data?.total_cards ?? null,
+          path_assignments: data?.path_assignments ?? null,
+        });
+        const text = data
+          ? `Muton hive map (root=${data.root}): ${data.total_cards} cards, ${data.path_assignments} path assignments\n${data.text}`
+          : out || "(empty)";
+        return {
+          content: [{ type: "text", text }],
+          details: {
+            total_cards: data?.total_cards,
+            path_assignments: data?.path_assignments,
+            root: data?.root,
+          },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logHook({ event: "muton_tree_error", error: msg.slice(0, 200) });
+        return {
+          content: [{ type: "text", text: `muton_tree failed: ${msg}` }],
+          details: { error: msg },
+        };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "muton_ls",
+    label: "Muton Ls",
+    description:
+      "List Muton card slugs and titles under a taxonomy path (no bodies). Use after muton_tree to drill into a folder.",
+    promptSnippet: "List Muton cards under a taxonomy path",
+    promptGuidelines: SEARCH_GUIDELINES,
+    parameters: lsParams,
+    async execute(_toolCallId, params) {
+      const path = String(params?.path ?? "").trim();
+      if (!path) {
+        return {
+          content: [{ type: "text", text: "path is required" }],
+          details: { error: "missing-path" },
+        };
+      }
+      try {
+        const out = await runMuton(["ls", "--json", path]);
+        let data;
+        try {
+          data = JSON.parse(out);
+        } catch {
+          data = null;
+        }
+        const cards = data?.cards || [];
+        logHook({
+          event: "muton_ls",
+          path,
+          n: cards.length,
+          slugs: cards.map((c) => c.slug),
+        });
+        if (!cards.length) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `No cards under ${data?.path || path}/`,
+              },
+            ],
+            details: { path: data?.path || path, n: 0 },
+          };
+        }
+        const lines = cards.map(
+          (c) => `- ${c.slug}\n  ${c.title}\n  use_when: ${c.use_when}`,
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${data.path}/ (${cards.length})\n${lines.join("\n")}`,
+            },
+          ],
+          details: { path: data.path, n: cards.length, slugs: cards.map((c) => c.slug) },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logHook({ event: "muton_ls_error", error: msg.slice(0, 200) });
+        return {
+          content: [{ type: "text", text: `muton_ls failed: ${msg}` }],
+          details: { error: msg },
+        };
+      }
+    },
+  });
+
+  pi.registerTool({
+    name: "muton_get",
+    label: "Muton Get",
+    description:
+      "Fetch one Muton card by slug (full body + taxonomy paths). Use after muton_ls or when you know the slug.",
+    promptSnippet: "Fetch one Muton card by slug",
+    promptGuidelines: SEARCH_GUIDELINES,
+    parameters: getParams,
+    async execute(_toolCallId, params) {
+      const slug = String(params?.slug ?? "").trim();
+      if (!slug) {
+        return {
+          content: [{ type: "text", text: "slug is required" }],
+          details: { error: "missing-slug" },
+        };
+      }
+      try {
+        const out = await runMuton(["get", "--json", slug]);
+        let data;
+        try {
+          data = JSON.parse(out);
+        } catch {
+          data = null;
+        }
+        if (!data || data.error) {
+          logHook({ event: "muton_get", slug, found: false });
+          return {
+            content: [{ type: "text", text: `Card not found: ${slug}` }],
+            details: { found: false, slug },
+          };
+        }
+        logHook({
+          event: "muton_get",
+          slug,
+          found: true,
+          paths: data.paths || [],
+        });
+        const paths = (data.paths || []).join(", ") || "(none)";
+        const text = [
+          `### ${data.title}`,
+          `slug: ${data.slug}`,
+          `paths: ${paths}`,
+          `Use when: ${data.use_when}`,
+          data.body || "",
+        ].join("\n");
+        return {
+          content: [{ type: "text", text }],
+          details: { found: true, slug, paths: data.paths || [] },
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logHook({ event: "muton_get_error", error: msg.slice(0, 200) });
+        return {
+          content: [{ type: "text", text: `muton_get failed: ${msg}` }],
+          details: { error: msg },
+        };
+      }
+    },
+  });
+
   pi.registerTool({
     name: "muton_search",
     label: "Muton Search",
@@ -147,7 +373,7 @@ export default function (pi) {
       "Semantic search over the shared Muton card hive (vector embeddings). Use for schema/join facts and question-specific prior knowledge. Limit: 10 calls per step.",
     promptSnippet: "Search Muton hive cards by meaning (schema + question-specific)",
     promptGuidelines: SEARCH_GUIDELINES,
-    parameters,
+    parameters: searchParams,
     async execute(_toolCallId, params) {
       const used = readSearchCount();
       if (used >= MAX_SEARCHES) {

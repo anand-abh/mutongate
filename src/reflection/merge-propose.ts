@@ -2,8 +2,8 @@ import type { Card } from "../cards/index.ts";
 import { cardEmbedText } from "../search/embed.ts";
 import { searchCardsVector } from "../search/vector.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
-import type { Completer } from "./complete/types.ts";
 import { createCompleter } from "./complete/index.ts";
+import type { Completer } from "./complete/types.ts";
 
 const DEFAULT_MERGE_K = 2;
 
@@ -55,8 +55,7 @@ function formatNeighbor(hit: {
   body: string;
   score?: number;
 }): string {
-  const score =
-    typeof hit.score === "number" ? ` score=${hit.score.toFixed(4)}` : "";
+  const score = typeof hit.score === "number" ? ` score=${hit.score.toFixed(4)}` : "";
   return [
     `slug=${hit.slug}${score}`,
     `title: ${hit.title}`,
@@ -127,6 +126,7 @@ function parseMergeDecision(raw: string, allowedSlugs: Set<string>): MergeDecisi
 /**
  * Propose a card: vector k-NN (default 2) → agent merge-or-create → expand or writeNew.
  * Falls back to lexical upsert when merge agent is off, hive has no embeddings, or the agent call fails.
+ * Callers that pass `paths` should apply them via store.setPaths/addPaths after (writer does this).
  */
 export async function proposeCard(
   store: CardStore,
@@ -138,16 +138,22 @@ export async function proposeCard(
   const body = input.body.trim();
   const proposal = { title, use_when, body };
   const now = opts.now ?? new Date();
+  const applyPaths = (card: Card, merged: boolean): ProposeOutcome => {
+    if (merged) store.addPaths(card.slug, input.paths);
+    else store.setPaths(card.slug, input.paths);
+    return { card, merged };
+  };
 
   if (opts.lexicalOnly || !mergeAgentEnabled()) {
     const before = store.cardCount();
     const card = store.upsert(proposal, now);
-    return { card, merged: store.cardCount() === before };
+    return applyPaths(card, store.cardCount() === before);
   }
 
   const k = opts.k ?? envInt("MUTON_MERGE_K", DEFAULT_MERGE_K);
   if (k <= 0 || store.cardCount() === 0) {
-    return { card: store.writeNew(proposal, now), merged: false };
+    const card = store.writeNew(proposal, now);
+    return applyPaths(card, false);
   }
 
   let neighbors: Array<{
@@ -169,14 +175,14 @@ export async function proposeCard(
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
 
   if (neighbors.length === 0) {
     // No embeddings yet — lexical near-dup still helps cold hive.
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
 
   const allowed = new Set(neighbors.map((n) => n.slug));
@@ -188,7 +194,8 @@ export async function proposeCard(
     });
     const decision = parseMergeDecision(raw, allowed);
     if (!decision || decision.action === "create") {
-      return { card: store.writeNew(proposal, now), merged: false };
+      const card = store.writeNew(proposal, now);
+      return applyPaths(card, false);
     }
     const card = store.update(
       decision.slug,
@@ -199,12 +206,12 @@ export async function proposeCard(
       },
       now,
     );
-    return { card, merged: true };
+    return applyPaths(card, true);
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return { card, merged: beforeSlugs.has(card.slug) };
+    return applyPaths(card, beforeSlugs.has(card.slug));
   }
 }
 
-export { MERGE_SYSTEM, parseMergeDecision, buildMergeUser };
+export { buildMergeUser, MERGE_SYSTEM, parseMergeDecision };

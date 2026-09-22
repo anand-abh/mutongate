@@ -16,6 +16,7 @@ export type WriteProposedOptions = {
 
 /**
  * Propose each card via vector k-NN + agent merge (default), or lexical upsert.
+ * Applies taxonomy paths after write (replace on create, union on merge).
  */
 export async function writeProposedCards(
   store: CardStore,
@@ -36,7 +37,7 @@ export async function writeProposedCards(
     }
     const outcome = await proposeCard(
       store,
-      { title, use_when: useWhen, body },
+      { title, use_when: useWhen, body, paths: proposal.paths },
       { completer: opts.completer, lexicalOnly: opts.lexicalOnly },
     );
     written.push(outcome.card);
