@@ -15,7 +15,8 @@ const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10)
 const SEARCH_GUIDELINES = [
   "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible. The db can be queried at most 4 times per question.",
   "Start with muton_tree once per step when unsure what the hive holds. If the hive is empty or tiny, skip further Muton browse/search and inspect the DB. If it has useful folders, use muton_ls / muton_get for known categories and muton_search for ad-hoc semantic lookup.",
-  "Use muton_search before any db query (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
+  "When muton_tree / muton_ls surfaces a relevant slug, prefer muton_get — it often returns better, more on-target facts than muton_search (exact card, no near-miss neighbors). muton_search is still fine for open-ended lookup when you do not already have a slug.",
+  "Use muton_search before any db query when you still need semantic recall (at most 10 searches this step). First search for schema/joins/encodings/db-query constraints; then search for question-specific entities or lookup patterns.",
   "If muton_search or muton_get returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
   "Only fall back to sqlite_master / PRAGMA when Muton returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
   "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_search for the same topic.",
