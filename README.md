@@ -1,18 +1,21 @@
 # mutongate
 
-Private Muton fork for **Harbor / Pi database-analytics** experiments: a durable **vector card hive**, an agentic **`muton_search`** tool (no auto-inject), and **silent ungated reflect** that proposes cards and optionally **merges** them into near neighbors.
+Private Muton fork: a durable **vector card hive**, agentic browse/search tools (no auto-inject), and **silent ungated reflect** that proposes cards and optionally **merges** them into near neighbors.
 
 Version: `0.3.0`
 
 ## What this is
 
-Mutongate wraps [Muton](https://github.com/manojbajaj95/muton)-style shared memory around the BIRD-SQL Formula 1 `database-analytics` task in [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench).
+Mutongate wraps [Muton](https://github.com/manojbajaj95/muton)-style shared memory for coding agents. Harbor recipes in this repo evaluate it on the BIRD-SQL Formula 1 `database-analytics` task in [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench), but the **hive runtime is task-agnostic**.
 
-Per question the Pi agent should:
+**Split:**
 
-1. Call **`muton_search`** (semantic) for schema / joins / encodings, then for question-specific facts (≤10 searches/step).
-2. Prefer **1–2 targeted `db query` calls** (soft ceiling **≤4** per question); trust hive schema instead of re-probing with `sqlite_master` / `PRAGMA` when search already covered the tables.
-3. Write `/app/answer.json`, then on session end **reflect** silently into the hive.
+| Layer | Lives in | Swap per task? |
+|-------|----------|----------------|
+| Hive (store, embed, search, tree/ls/get, reflect, merge) | `src/`, `harbor/opt-muton/muton.ts` | No |
+| Task tips + reflection extras | **one** markdown under `harbor/policies/` via `MUTON_TASK_POLICY` | **Yes** |
+
+ALB SQL budgets, trust-vs-`sqlite_master`, and F1 folder bias are **only** in `harbor/policies/alb-database-analytics.md` — not hardcoded in the Pi extension.
 
 Cards live as markdown under `MUTON_HOME` (Harbor: cold hive each run). On write, Muton embeds `title + use_when + body` and stores vectors in `index.sqlite`.
 
@@ -50,14 +53,17 @@ Do not add a catch-all `utils.ts`. Paths live in `store/`; host completion lives
 | `MUTON_MERGE_K` | `2` | Vector neighbors considered for merge |
 | `MUTON_MERGE_AGENT` | on (`1`) | Set `0` / `false` to force lexical upsert only |
 
-## Agent search guidelines (Harbor Pi)
+## Task policy (swappable)
 
-Injected by `harbor/opt-muton/muton.ts` (override the task’s schema-inspect nudge):
+```bash
+# Default for database-analytics Harbor runs:
+MUTON_TASK_POLICY=/opt/muton/policies/alb-database-analytics.md
 
-- Minimize `db query`; prefer 1–2; **at most 4 per question**.
-- `muton_search` before SQL; schema/joins first, then entities.
-- Trust usable hive schema — do not re-run `sqlite_master` / `PRAGMA` when search covered those tables.
-- Fall back to DB inspection only when search misses; avoid fishing / duplicate probes.
+# Other benchmark: mount harbor/policies and point at another file
+MUTON_TASK_POLICY=/opt/muton/policies/example-generic.md
+```
+
+Format: `## Agent tips` (injected into Pi system prompt) + optional `## Reflection` (appended on reflect). See `harbor/policies/README.md`.
 
 ## Layout (repo)
 
@@ -65,7 +71,9 @@ Injected by `harbor/opt-muton/muton.ts` (override the task’s schema-inspect nu
 |------|---------|
 | `src/` | Muton CLI / library source |
 | `prompts/REFLECTION.md` | Optional extra reflection text (appended to built-in prompt) |
-| `harbor/` | Pi extension, `muton-real` binary, wrapper, mounts, compose bridge |
+| `harbor/policies/` | **Task-specific** tip/reflection markdown (swappable) |
+| `harbor/opt-muton/` | Pi extension + bashenv (generic hive wiring) |
+| `harbor/` | `muton-real` binary, wrapper, mounts, compose bridge |
 | `scripts/run-database-analytics.sh` | Smoke 10 / medium 40 / full 174 |
 | `scripts/harbor-run.sh` | Low-level `harbor run -p <task>` |
 | `docs/VECTOR.md` | Vector hive + `muton_search` detail |
@@ -91,6 +99,7 @@ Requires Node ≥ 22.14 and Bun for the Harbor bind-mount.
 |----------|---------|
 | `MUTON_VECTOR=1` | Semantic search over card embeddings (Harbor default) |
 | `MUTON_MAX_SEARCHES` | Per-step `muton_search` budget (default / Harbor: **10**) |
+| `MUTON_TASK_POLICY` | Path to task tip/reflection markdown (Harbor default: ALB F1 policy) |
 | `MUTON_VECTOR_K` | Default k for CLI/MCP vector search (default 5) |
 | `MUTON_MERGE_K` | Neighbors for propose-merge (default **2**) |
 | `MUTON_MERGE_AGENT` | Agent merge on propose (default on) |

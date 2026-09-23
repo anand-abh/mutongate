@@ -3,9 +3,9 @@ export const PATH_VOCAB_HINTS = [
   "schema",
   "encoding",
   "lookup",
-  "episode",
   "preference",
-  "null-event",
+  "procedure",
+  "api",
 ] as const;
 
 export const UNCATEGORIZED_PATH = "uncategorized";

@@ -1,4 +1,5 @@
-// Muton Pi extension — vector search + taxonomy browse + silent reflect
+// Muton Pi extension — vector search + taxonomy browse + silent reflect.
+// Task-specific tips come from MUTON_TASK_POLICY (markdown); this file stays general.
 import { execFileSync, spawn } from "node:child_process";
 import {
   appendFileSync,
@@ -12,15 +13,20 @@ import { join } from "node:path";
 
 const MAX_SEARCHES = Number.parseInt(process.env.MUTON_MAX_SEARCHES || "10", 10) || 10;
 
-const SEARCH_GUIDELINES = [
-  "Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible. The db can be queried at most 4 times per question.",
-  "Start with muton_tree once per step. If the hive is empty or tiny (about ≤3 cards), skip browse/search and inspect the DB.",
-  "If tree shows useful folders: before any muton_search, muton_ls 1–2 relevant paths (prefer schema/* and small lookup/*; avoid giant episode/* dumps unless the question is clearly that episode). Then muton_get 1–2 promising slugs from that ls (read full bodies).",
-  "Prefer facts from muton_get when they answer the need (exact card). Use muton_search only after that browse, or when no folder/slug fits (at most 10 searches this step). First search schema/joins/encodings; then question-specific entities.",
-  "If muton_get or muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.",
-  "Only fall back to sqlite_master / PRAGMA when Muton returns nothing useful for the needed tables. Treat empty/irrelevant hive hits as missing memory, then inspect the DB.",
-  "Avoid exploratory fishing: no broad SELECT * dumps, no repeated near-duplicate queries, and no schema probes after a successful muton_get or muton_search for the same topic.",
+/** Generic hive tip when no task policy is mounted. */
+const CORE_TIP_HEADER = [
+  "MUTON HIVE (browse + vector search — nothing is auto-injected)",
+  "Tools: muton_tree (map), muton_ls (list under a path), muton_get (one card), muton_search (semantic).",
+].join("\n");
+
+const CORE_GUIDELINES = [
+  "Nothing is auto-injected — call muton_tree / muton_ls / muton_get / muton_search explicitly when you need hive memory.",
+  "Start with muton_tree when unsure what the hive holds. If empty or tiny, proceed without further Muton calls.",
+  "When folders look relevant, muton_ls then muton_get promising slugs before muton_search.",
+  "Use muton_search for open-ended semantic recall (per-step search budget applies).",
 ];
+
+const DEFAULT_POLICY_PATH = "/opt/muton/policies/alb-database-analytics.md";
 
 function loadType() {
   const bases = [];
@@ -92,8 +98,77 @@ function logHook(payload) {
   }
 }
 
+/** Inline policy loader (Pi extension cannot import src/). Mirrors src/policy/task-policy.ts. */
+function loadTaskPolicy() {
+  const fromEnv = (process.env.MUTON_TASK_POLICY || "").trim();
+  const path =
+    fromEnv && existsSync(fromEnv)
+      ? fromEnv
+      : existsSync(DEFAULT_POLICY_PATH)
+        ? DEFAULT_POLICY_PATH
+        : null;
+  if (!path) {
+    return { path: null, agentTips: "", guidelines: [] };
+  }
+  try {
+    const md = readFileSync(path, "utf8").replace(/^\uFEFF/, "").trim();
+    const lines = md.split(/\r?\n/);
+    const agentTipsHeading = /^##\s+agent\s+tips\s*$/i;
+    const reflectionHeading = /^##\s+reflection\s*$/i;
+    const anyH2 = /^##\s+/;
+
+    let start = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (agentTipsHeading.test(lines[i].trim())) {
+        start = i + 1;
+        break;
+      }
+    }
+    let tipsBody = "";
+    if (start >= 0) {
+      let end = lines.length;
+      for (let i = start; i < lines.length; i++) {
+        const t = lines[i].trim();
+        if (anyH2.test(t) && !agentTipsHeading.test(t)) {
+          end = i;
+          break;
+        }
+      }
+      tipsBody = lines.slice(start, end).join("\n").trim();
+    } else {
+      const bodyLines = [...lines];
+      if (bodyLines[0]?.match(/^#\s+/)) bodyLines.shift();
+      while (bodyLines[0]?.trim() === "") bodyLines.shift();
+      const refIdx = bodyLines.findIndex((l) => reflectionHeading.test(l.trim()));
+      tipsBody = (refIdx >= 0 ? bodyLines.slice(0, refIdx) : bodyLines)
+        .join("\n")
+        .trim();
+    }
+
+    const guidelines = [];
+    for (const line of tipsBody.split(/\r?\n/)) {
+      const m = line.match(/^\s*-\s+(.+)$/);
+      if (m) guidelines.push(m[1].trim());
+    }
+    return { path, agentTips: tipsBody, guidelines };
+  } catch {
+    return { path, agentTips: "", guidelines: [] };
+  }
+}
+
+function buildSystemTip(policy) {
+  if (policy.agentTips) {
+    return `\n${policy.agentTips}`;
+  }
+  return `\n${CORE_TIP_HEADER}\n${CORE_GUIDELINES.map((g) => `- ${g}`).join("\n")}`;
+}
+
 export default function (pi) {
-  // Reset per-step search budget; inject guidelines only (no auto-retrieved cards).
+  const policy = loadTaskPolicy();
+  const guidelines =
+    policy.guidelines.length > 0 ? policy.guidelines : CORE_GUIDELINES;
+
+  // Reset per-step search budget; inject tips only (no auto-retrieved cards).
   pi.on("before_agent_start", async (event) => {
     writeSearchCount(0);
     logHook({
@@ -101,16 +176,11 @@ export default function (pi) {
       prompt_chars: (event.prompt ?? "").length,
       vector: process.env.MUTON_VECTOR || null,
       auto_inject: "0",
+      task_policy: policy.path,
+      tip_chars: policy.agentTips.length || CORE_TIP_HEADER.length,
     });
-    const tip = [
-      "",
-      "MUTON HIVE (browse + vector search — nothing is auto-injected)",
-      "Tools: muton_tree (map), muton_ls (list under a path), muton_get (one card), muton_search (semantic).",
-      "Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema and minimize db query count.",
-      ...SEARCH_GUIDELINES.map((g) => `- ${g}`),
-    ].join("\n");
     return {
-      systemPrompt: `${event.systemPrompt || ""}\n${tip}`,
+      systemPrompt: `${event.systemPrompt || ""}${buildSystemTip(policy)}`,
     };
   });
 
@@ -120,7 +190,7 @@ export default function (pi) {
     ? Type.Object({
         query: Type.String({
           description:
-            "Natural-language search over durable Muton cards (schema, joins, encodings, or question-specific facts)",
+            "Natural-language search over durable Muton cards in the shared hive",
         }),
         k: Type.Optional(
           Type.Number({
@@ -134,7 +204,7 @@ export default function (pi) {
           query: {
             type: "string",
             description:
-              "Natural-language search over durable Muton cards (schema, joins, encodings, or question-specific facts)",
+              "Natural-language search over durable Muton cards in the shared hive",
           },
           k: {
             type: "number",
@@ -195,7 +265,7 @@ export default function (pi) {
     description:
       "Show the Muton hive taxonomy directory (folder counts, no card bodies). Use first to see whether the hive is empty and what categories exist.",
     promptSnippet: "Browse Muton hive directory map (counts only)",
-    promptGuidelines: SEARCH_GUIDELINES,
+    promptGuidelines: guidelines,
     parameters: treeParams,
     async execute(_toolCallId, params) {
       const path = String(params?.path ?? "").trim();
@@ -248,7 +318,7 @@ export default function (pi) {
     description:
       "List Muton card slugs and titles under a taxonomy path (no bodies). Use after muton_tree to drill into a folder.",
     promptSnippet: "List Muton cards under a taxonomy path",
-    promptGuidelines: SEARCH_GUIDELINES,
+    promptGuidelines: guidelines,
     parameters: lsParams,
     async execute(_toolCallId, params) {
       const path = String(params?.path ?? "").trim();
@@ -313,7 +383,7 @@ export default function (pi) {
     description:
       "Fetch one Muton card by slug (full body + taxonomy paths). Use after muton_ls or when you know the slug.",
     promptSnippet: "Fetch one Muton card by slug",
-    promptGuidelines: SEARCH_GUIDELINES,
+    promptGuidelines: guidelines,
     parameters: getParams,
     async execute(_toolCallId, params) {
       const slug = String(params?.slug ?? "").trim();
@@ -371,9 +441,9 @@ export default function (pi) {
     name: "muton_search",
     label: "Muton Search",
     description:
-      "Semantic search over the shared Muton card hive (vector embeddings). Use for schema/join facts and question-specific prior knowledge. Limit: 10 calls per step.",
-    promptSnippet: "Search Muton hive cards by meaning (schema + question-specific)",
-    promptGuidelines: SEARCH_GUIDELINES,
+      "Semantic search over the shared Muton card hive (vector embeddings). Limit: 10 calls per step.",
+    promptSnippet: "Search Muton hive cards by meaning",
+    promptGuidelines: guidelines,
     parameters: searchParams,
     async execute(_toolCallId, params) {
       const used = readSearchCount();
@@ -382,7 +452,7 @@ export default function (pi) {
           content: [
             {
               type: "text",
-              text: `muton_search budget exhausted (${MAX_SEARCHES} searches this step). Continue with db query / local reasoning.`,
+              text: `muton_search budget exhausted (${MAX_SEARCHES} searches this step). Continue with other tools or local reasoning.`,
             },
           ],
           details: { blocked: true, used, max: MAX_SEARCHES },

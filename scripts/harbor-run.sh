@@ -93,6 +93,8 @@ MOUNTS="$(cat "$MOUNTS_FILE")"
 BENCH="$(find_bench_root "$TASK")"
 STEPS="$(count_steps "$TASK/task.toml")"
 MODEL="${MUTON_MODEL:-gpt-5.6-luna}"
+# Task-specific tips/reflection extras (one markdown file). Override per benchmark.
+TASK_POLICY="${MUTON_TASK_POLICY:-/opt/muton/policies/alb-database-analytics.md}"
 
 CMD=(
   harbor run -p "$TASK" -a pi -m "openai/${MODEL}"
@@ -104,6 +106,7 @@ CMD=(
   --ae "MUTON_API_KEY=${OPENAI_API_KEY:-}"
   --ae "MUTON_VECTOR=1"
   --ae "MUTON_MAX_SEARCHES=10"
+  --ae "MUTON_TASK_POLICY=${TASK_POLICY}"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -121,6 +124,7 @@ echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
 echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
+echo "  task_policy: ${TASK_POLICY}"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'

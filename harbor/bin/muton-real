@@ -14825,7 +14825,10 @@ var BOILERPLATE = new Set([
 var MAX_CONTENT_TERMS = 16;
 var MAX_PHRASE_CHARS = 180;
 function resolveQuestionText(prompt) {
-  const candidates = [process.env.MUTON_QUESTION_PATH, "/app/question.md"].filter((p) => Boolean(p));
+  const candidates = [
+    process.env.MUTON_QUESTION_PATH,
+    "/app/question.md"
+  ].filter((p) => Boolean(p));
   for (const path of candidates) {
     try {
       if (existsSync(path)) {
@@ -30525,12 +30528,99 @@ async function cmdPropose(args) {
 }
 
 // src/reflection/index.ts
-import { appendFileSync, readFileSync as readFileSync9 } from "node:fs";
+import { appendFileSync, readFileSync as readFileSync10 } from "node:fs";
 import { join as join9 } from "node:path";
 
 // src/reflection/prompt.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
 import { join as join8 } from "node:path";
+
+// src/policy/task-policy.ts
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
+var AGENT_TIPS_HEADING = /^##\s+agent\s+tips\s*$/i;
+var REFLECTION_HEADING = /^##\s+reflection\s*$/i;
+var ANY_H2 = /^##\s+/;
+function resolveTaskPolicyPath(defaultPath) {
+  const fromEnv = (process.env.MUTON_TASK_POLICY || "").trim();
+  if (fromEnv && existsSync8(fromEnv))
+    return fromEnv;
+  if (defaultPath && existsSync8(defaultPath))
+    return defaultPath;
+  return null;
+}
+function parseTaskPolicyMarkdown(md) {
+  const text = md.replace(/^\uFEFF/, "").trim();
+  if (!text) {
+    return { agentTips: "", guidelines: [], reflectionExtra: "" };
+  }
+  const lines = text.split(/\r?\n/);
+  const agentTips = extractSection(lines, AGENT_TIPS_HEADING);
+  const reflectionExtra = extractSection(lines, REFLECTION_HEADING);
+  let tipsBody = agentTips;
+  if (!tipsBody) {
+    const bodyLines = [...lines];
+    if (bodyLines[0]?.match(/^#\s+/))
+      bodyLines.shift();
+    while (bodyLines[0]?.trim() === "")
+      bodyLines.shift();
+    const refIdx = bodyLines.findIndex((l) => REFLECTION_HEADING.test(l.trim()));
+    tipsBody = (refIdx >= 0 ? bodyLines.slice(0, refIdx) : bodyLines).join(`
+`).trim();
+  }
+  return {
+    agentTips: tipsBody,
+    guidelines: extractGuidelineBullets(tipsBody),
+    reflectionExtra: reflectionExtra.trim()
+  };
+}
+function loadTaskPolicy(opts) {
+  const path = resolveTaskPolicyPath(opts?.defaultPath);
+  if (!path) {
+    return { path: null, agentTips: "", guidelines: [], reflectionExtra: "" };
+  }
+  try {
+    const parsed = parseTaskPolicyMarkdown(readFileSync8(path, "utf8"));
+    return { path, ...parsed };
+  } catch {
+    return { path, agentTips: "", guidelines: [], reflectionExtra: "" };
+  }
+}
+function extractSection(lines, heading) {
+  let start = -1;
+  for (let i = 0;i < lines.length; i++) {
+    const line = lines[i];
+    if (line !== undefined && heading.test(line.trim())) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0)
+    return "";
+  let end = lines.length;
+  for (let i = start;i < lines.length; i++) {
+    const line = lines[i];
+    if (line === undefined)
+      continue;
+    const t = line.trim();
+    if (ANY_H2.test(t) && !heading.test(t)) {
+      end = i;
+      break;
+    }
+  }
+  return lines.slice(start, end).join(`
+`).trim();
+}
+function extractGuidelineBullets(tips) {
+  const out = [];
+  for (const line of tips.split(/\r?\n/)) {
+    const m = line.match(/^\s*-\s+(.+)$/);
+    if (m?.[1])
+      out.push(m[1].trim());
+  }
+  return out;
+}
+
+// src/reflection/prompt.ts
 var DEFAULT_REFLECTION_PROMPT = `You extract 0–5 durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
@@ -30538,38 +30628,43 @@ Return ONLY a JSON array. No markdown fences. No commentary. Each item:
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
   "body": "the durable fact — concrete and reusable",
-  "paths": ["schema/qualifying", "lookup"]
+  "paths": ["domain/subtopic", "lookup"]
 }
 
 Taxonomy paths (soft directory for browsing the hive later):
 - paths is a JSON array of 1–3 slash-separated folders (multi-parent OK).
 - Invent paths that fit the fact's domain — do not force unrelated labels.
-- Example top-level folders when they fit: schema, encoding, lookup, episode, preference, null-event.
-- Add a second segment when useful (e.g. schema/joins, lookup/circuits). For other tasks invent sensible roots (e.g. api/auth, deploy/k8s).
+- Example top-level folders when they fit: schema, encoding, lookup, preference, procedure, api.
+- Add a second segment when useful (e.g. schema/joins, api/auth, deploy/k8s).
 - Prefer stable reusable folders over one-off episode names when the fact is general.
 
 Rules:
 - Propose only durable facts that would help another agent later.
 - Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints.
-- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, schema reminders the task already states, ephemeral debugging chatter.
+- Skip: one-off plans, full transcripts, secrets/credentials, generic advice, reminders the task already states, ephemeral debugging chatter.
 - Near-duplicates may be merged into existing hive cards later; prefer distinct durable facts. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
 - Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
 - title and use_when are mandatory and non-empty. body is the durable fact. paths should be present when you can classify the card.`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
   const home = opts?.home ?? mutonHome();
-  const extra = readExtraPrompt(cwd, home);
-  if (!extra)
-    return DEFAULT_REFLECTION_PROMPT;
-  return `${DEFAULT_REFLECTION_PROMPT}
+  const parts = [DEFAULT_REFLECTION_PROMPT];
+  const policy = loadTaskPolicy();
+  if (policy.reflectionExtra) {
+    parts.push(policy.reflectionExtra);
+  }
+  const extraMd = readExtraPrompt(cwd, home);
+  if (extraMd)
+    parts.push(extraMd);
+  return parts.join(`
 
-${extra}`;
+`);
 }
 function readExtraPrompt(cwd, home) {
   for (const path of [join8(cwd, "REFLECTION.md"), join8(home, "REFLECTION.md")]) {
-    if (!existsSync8(path))
+    if (!existsSync9(path))
       continue;
-    const text = readFileSync8(path, "utf8").trim();
+    const text = readFileSync9(path, "utf8").trim();
     if (text)
       return text;
   }
@@ -30636,7 +30731,7 @@ async function reflect(opts) {
   const store = new CardStore(opts.home);
   try {
     const system = loadReflectionPrompt({ cwd: opts.cwd, home: store.home });
-    let transcript = readFileSync9(opts.transcriptPath, "utf8");
+    let transcript = readFileSync10(opts.transcriptPath, "utf8");
     if (transcript.length > 120000) {
       transcript = transcript.slice(-120000);
     }
@@ -30754,8 +30849,8 @@ async function cmdReflect(args) {
 }
 
 // src/cli/commands/search.ts
-import { createHash } from "node:crypto";
 import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync7 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join as join10 } from "node:path";
 function logLine(file, payload) {
   const home = process.env.MUTON_HOME;

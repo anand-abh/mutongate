@@ -16,11 +16,15 @@ describe("reflection prompt", () => {
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(cwd, "REFLECTION.md"), "PROJECT PROMPT");
     writeFileSync(join(home, "REFLECTION.md"), "HOME PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    delete process.env.MUTON_TASK_POLICY;
     try {
       expect(loadReflectionPrompt({ cwd, home })).toBe(
         `${DEFAULT_REFLECTION_PROMPT}\n\nPROJECT PROMPT`,
       );
     } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -32,11 +36,37 @@ describe("reflection prompt", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(home, "REFLECTION.md"), "HOME PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    delete process.env.MUTON_TASK_POLICY;
     try {
       expect(loadReflectionPrompt({ cwd, home })).toBe(
         `${DEFAULT_REFLECTION_PROMPT}\n\nHOME PROMPT`,
       );
     } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("appends MUTON_TASK_POLICY ## Reflection before REFLECTION.md", () => {
+    const root = mkdtempSync(join(tmpdir(), "muton-prompt-policy-"));
+    const home = join(root, "home");
+    const cwd = join(root, "cwd");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    const policyPath = join(root, "policy.md");
+    writeFileSync(policyPath, "# T\n\n## Agent tips\n\n- tip\n\n## Reflection\n\nPOLICY REFLECT\n");
+    writeFileSync(join(cwd, "REFLECTION.md"), "PROJECT PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    process.env.MUTON_TASK_POLICY = policyPath;
+    try {
+      expect(loadReflectionPrompt({ cwd, home })).toBe(
+        `${DEFAULT_REFLECTION_PROMPT}\n\nPOLICY REFLECT\n\nPROJECT PROMPT`,
+      );
+    } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
       rmSync(root, { recursive: true, force: true });
     }
   });
