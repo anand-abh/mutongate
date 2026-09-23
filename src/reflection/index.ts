@@ -37,7 +37,14 @@ function shouldTryResume(opts: ReflectOptions): boolean {
 
 async function embedWritten(
   store: CardStore,
-  cards: { slug: string; title: string; use_when: string; body: string; created_at: string; updated_at: string }[],
+  cards: {
+    slug: string;
+    title: string;
+    use_when: string;
+    body: string;
+    created_at: string;
+    updated_at: string;
+  }[],
 ): Promise<number> {
   let n = 0;
   for (const card of cards) {
@@ -176,11 +183,18 @@ function filterProposals(parsed: unknown[]): ProposeInput[] {
     ) {
       continue;
     }
-    out.push({
+    const item: ProposeInput = {
       title: o.title,
       use_when: o.use_when,
       body: o.body,
-    });
+    };
+    if (o.paths !== undefined)
+      item.paths = Array.isArray(o.paths)
+        ? o.paths.filter((x): x is string => typeof x === "string")
+        : typeof o.paths === "string"
+          ? [o.paths]
+          : undefined;
+    out.push(item);
   }
   return out;
 }
@@ -195,6 +209,6 @@ function log(home: string, line: string): void {
 
 export { hostSupportsResume, usableSessionId } from "./complete/host-cli.ts";
 export { createCompleter } from "./complete/index.ts";
-export { loadReflectionPrompt } from "./prompt.ts";
 export { proposeCard } from "./merge-propose.ts";
+export { loadReflectionPrompt } from "./prompt.ts";
 export { writeProposedCards } from "./writer.ts";

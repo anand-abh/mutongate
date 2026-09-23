@@ -1,6 +1,8 @@
 # Database analytics (10 / 40 / 174)
 
-Mutongate runs Harbor `pi` with a **vector card hive** and agentic `muton_search` (no auto-inject), plus **stock ungated reflect**. It is **not** an `alb --system` entry. Use the scripts in this repo against a local [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench) clone.
+Mutongate runs Harbor `pi` with a **vector card hive**, browse/search tools (no auto-inject), **stock ungated reflect**, and the ALB task policy at `harbor/policies/alb-database-analytics.md` (`MUTON_TASK_POLICY`). It is **not** an `alb --system` entry. Use the scripts in this repo against a local [agent-learning-bench](https://github.com/manojbajaj95/agent-learning-bench) clone.
+
+To try Muton on another bench, keep the same hive mounts and point `MUTON_TASK_POLICY` at a new markdown under `harbor/policies/` (see that directory’s README).
 
 Sizes (BIRD-SQL `formula_1`, 174 questions):
 

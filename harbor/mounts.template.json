@@ -33,5 +33,11 @@
     "source": "<MUTONGATE_ROOT>/harbor/opt-muton/bashenv.sh",
     "target": "/opt/muton/bashenv.sh",
     "read_only": true
+  },
+  {
+    "type": "bind",
+    "source": "<MUTONGATE_ROOT>/harbor/policies",
+    "target": "/opt/muton/policies",
+    "read_only": true
   }
 ]

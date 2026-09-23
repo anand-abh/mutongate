@@ -16,11 +16,15 @@ describe("reflection prompt", () => {
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(cwd, "REFLECTION.md"), "PROJECT PROMPT");
     writeFileSync(join(home, "REFLECTION.md"), "HOME PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    delete process.env.MUTON_TASK_POLICY;
     try {
       expect(loadReflectionPrompt({ cwd, home })).toBe(
         `${DEFAULT_REFLECTION_PROMPT}\n\nPROJECT PROMPT`,
       );
     } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -32,11 +36,37 @@ describe("reflection prompt", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(home, "REFLECTION.md"), "HOME PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    delete process.env.MUTON_TASK_POLICY;
     try {
       expect(loadReflectionPrompt({ cwd, home })).toBe(
         `${DEFAULT_REFLECTION_PROMPT}\n\nHOME PROMPT`,
       );
     } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("appends MUTON_TASK_POLICY ## Reflection before REFLECTION.md", () => {
+    const root = mkdtempSync(join(tmpdir(), "muton-prompt-policy-"));
+    const home = join(root, "home");
+    const cwd = join(root, "cwd");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    const policyPath = join(root, "policy.md");
+    writeFileSync(policyPath, "# T\n\n## Agent tips\n\n- tip\n\n## Reflection\n\nPOLICY REFLECT\n");
+    writeFileSync(join(cwd, "REFLECTION.md"), "PROJECT PROMPT");
+    const prevPolicy = process.env.MUTON_TASK_POLICY;
+    process.env.MUTON_TASK_POLICY = policyPath;
+    try {
+      expect(loadReflectionPrompt({ cwd, home })).toBe(
+        `${DEFAULT_REFLECTION_PROMPT}\n\nPOLICY REFLECT\n\nPROJECT PROMPT`,
+      );
+    } finally {
+      if (prevPolicy === undefined) delete process.env.MUTON_TASK_POLICY;
+      else process.env.MUTON_TASK_POLICY = prevPolicy;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -46,6 +76,13 @@ describe("parseProposals", () => {
   test("parses JSON array", () => {
     const items = parseProposals(`[{"title":"A","use_when":"B","body":"C"}]`);
     expect(items).toEqual([{ title: "A", use_when: "B", body: "C" }]);
+  });
+
+  test("parses paths array", () => {
+    const items = parseProposals(
+      `[{"title":"A","use_when":"B","body":"C","paths":["schema/joins","lookup"]}]`,
+    );
+    expect(items[0]?.paths).toEqual(["schema/joins", "lookup"]);
   });
 
   test("parses fenced JSON", () => {
@@ -73,16 +110,26 @@ describe("reflect", () => {
           expect(req.user).toBe("We learned that Stripe returns 200 with error body.");
           expect(req.user).not.toContain("Existing card titles");
           expect(req.system).toContain("Near-duplicates may be merged");
+          expect(req.system).toContain("paths");
           return JSON.stringify([
             {
               title: "Stripe 200 error body",
               use_when: "Stripe HTTP",
               body: "Check JSON error on 200.",
+              paths: ["encoding/http", "api/stripe"],
             },
           ]);
         },
       });
       expect(result.written).toBe(1);
+      const store = new CardStore(root);
+      try {
+        const cards = store.listCards();
+        expect(cards.length).toBe(1);
+        expect(store.getPaths(cards[0]!.slug).sort()).toEqual(["api/stripe", "encoding/http"]);
+      } finally {
+        store.close();
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -184,8 +231,7 @@ describe("reflect", () => {
               slug: first.slug,
               title: "Stripe 200 error body",
               use_when: "Stripe HTTP responses",
-              body:
-                "Read JSON error even when status is 200. Parse the error field before treating 2xx as success.",
+              body: "Read JSON error even when status is 200. Parse the error field before treating 2xx as success.",
             });
           }
           return JSON.stringify([
