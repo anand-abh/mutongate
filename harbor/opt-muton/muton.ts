@@ -165,8 +165,14 @@ function buildSystemTip(policy) {
 
 export default function (pi) {
   const policy = loadTaskPolicy();
-  const guidelines =
-    policy.guidelines.length > 0 ? policy.guidelines : CORE_GUIDELINES;
+  // Task policy owns tool guidelines. Do not fall back to CORE_GUIDELINES when a
+  // policy file is loaded but has zero `-` bullets (that re-injected browse tips
+  // and defeated bare policies).
+  const guidelines = policy.path
+    ? policy.guidelines
+    : policy.guidelines.length > 0
+      ? policy.guidelines
+      : CORE_GUIDELINES;
 
   // Reset per-step search budget; inject tips only (no auto-retrieved cards).
   pi.on("before_agent_start", async (event) => {

@@ -5,9 +5,13 @@ SYNC_DIR=/home/agent/.agents/muton
 LIVE_DIR=/tmp/muton-agent-store
 mkdir -p "$LIVE_DIR/cards" "$LIVE_DIR/logs" "$LIVE_DIR/scratch" "$LIVE_DIR/tmp" "$SYNC_DIR"
 
-if [ -z "$(ls -A "$LIVE_DIR/cards" 2>/dev/null)" ] && [ -d "$SYNC_DIR/cards" ]; then
+# Seed live store from the bind-mounted hive when live is empty (fresh container)
+# OR when sync has cards but live has none in sqlite yet (cards dir placeholder only).
+sync_cards="$(ls -A "$SYNC_DIR/cards" 2>/dev/null | wc -l | tr -d ' ')"
+live_cards="$(ls -A "$LIVE_DIR/cards" 2>/dev/null | wc -l | tr -d ' ')"
+if [ "${sync_cards:-0}" -gt 0 ] && [ "${live_cards:-0}" -eq 0 ]; then
   cp -a "$SYNC_DIR/cards/." "$LIVE_DIR/cards/" 2>/dev/null || true
-  if [ -f "$SYNC_DIR/index.sqlite" ] && [ ! -f "$LIVE_DIR/index.sqlite" ]; then
+  if [ -f "$SYNC_DIR/index.sqlite" ]; then
     cp -a "$SYNC_DIR/index.sqlite" "$LIVE_DIR/index.sqlite" 2>/dev/null || true
   fi
 fi

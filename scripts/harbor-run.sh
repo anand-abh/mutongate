@@ -123,7 +123,12 @@ echo "  task:  ${TASK}"
 echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
-echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
+KEEP_HIVE="${MUTON_KEEP_HIVE:-0}"
+if [[ "$KEEP_HIVE" == "1" || "$KEEP_HIVE" == "true" ]]; then
+  echo "  vector-tool: on  max_searches: 10  (KEEP hive; no wipe)"
+else
+  echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
+fi
 echo "  task_policy: ${TASK_POLICY}"
 
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -138,7 +143,14 @@ if ! command -v harbor >/dev/null 2>&1; then
   exit 1
 fi
 
-cold_hive "$ROOT"
+# Default: wipe muton-home for a cold start. Set MUTON_KEEP_HIVE=1 to preserve a
+# pre-seeded warm hive (cards + index.sqlite) across harbor-run.
+if [[ "$KEEP_HIVE" == "1" || "$KEEP_HIVE" == "true" ]]; then
+  echo "  MUTON_KEEP_HIVE=1 — skipping cold_hive wipe"
+  chmod -R a+rwX "$ROOT/harbor/muton-home" 2>/dev/null || true
+else
+  cold_hive "$ROOT"
+fi
 sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
 cd "$BENCH"
 exec "${CMD[@]}"
