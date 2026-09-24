@@ -8,9 +8,9 @@ Swap via `MUTON_TASK_POLICY=/opt/muton/policies/alb-codebase-qa.md`.
 
 MUTON HIVE — nothing auto-injected.
 - Call `muton_search` early when the hive may hold prior paths/symbols (`muton_get` if you already know a slug). Do not start with `muton_tree` / `muton_ls`.
-- On a hit that cites a real `/data/repo` path or symbol: `read` that file (and nearby lines if needed), then write `/app/answer.json`. Do **not** follow with broad `grep` / `rg` / `find` “to confirm” — that is wasted cost. One confirming read of the cited path is enough.
-- If the card already states the behavior and names the file, answer from card + that one read. Skip rediscovering via repo-wide search.
-- Skip Muton only when search returns nothing useful. Never trust answer prose with no path — then explore the repo.
+- After `muton_search` / `muton_get` returns a card that names a path under `/data/repo`: allowed tools until `/app/answer.json` is written are only `read` on that path (optional second `read` on a path the first file clearly imports) and `write`. Forbidden: `bash` with `grep`/`rg`/`find`, and any other `/data/repo` walk.
+- Sequence: search → read cited file → write answer. Stop. Do not “verify with a repo search.”
+- Use `bash` grep/rg/find only if Muton returned no cards (or only cards with no `/data/repo` path).
 
 ## Reflection
 
