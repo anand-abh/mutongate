@@ -7,19 +7,32 @@ description: Shared hive memory of durable Cards. Query before unfamiliar work; 
 
 Muton is a shared hive of durable **Cards** (facts) for coding agents.
 
-## When to search
+## Tools
 
-Before unfamiliar schema/API work, call the `muton_search` tool (Harbor Pi) or:
+| Tool / CLI | Role |
+|------------|------|
+| `muton_tree` / `muton tree` | Taxonomy map (folder counts) |
+| `muton_ls` / `muton ls <path>` | List slugs under a path |
+| `muton_get` / `muton get <slug>` | Full card body |
+| `muton_search` / `muton search` | Semantic (vector) search |
+| `muton propose` / MCP `propose` | Write a durable card |
+| `muton reflect` | Session-end propose (silent) |
+
+## When to search / browse
+
+Before unfamiliar work, browse or search the hive rather than rediscovering known facts:
 
 ```bash
-MUTON_VECTOR=1 muton search "qualifying q1 null encoding"
+MUTON_VECTOR=1 muton search "topic you need"
 ```
 
-Prefer searching for schema/joins first, then question-specific facts (up to 10 searches per step). **Minimize `db query` calls.** If hive cards already give the needed schema/joins, do not re-inspect with `sqlite_master` / `PRAGMA`.
+Prefer `tree` → `ls` → `get` when the taxonomy has useful folders; use `search` for open-ended recall (Harbor default: up to 10 searches per step).
+
+**Task-specific behavior** (SQL budgets, trust-vs-inspect, folder bias, …) lives in a swappable policy file — see `harbor/policies/` and `MUTON_TASK_POLICY`. Do not put benchmark tips in this skill.
 
 ## When to propose
 
-When you learn a durable, reusable fact (undocumented behavior, workaround, encoding). Search first. Propose the fact; the store updates a near-duplicate Card in place:
+When you learn a durable, reusable fact (undocumented behavior, workaround, encoding). Search first. Propose the fact; the store may merge a near-duplicate:
 
 ```bash
 muton propose --title "..." --use-when "..." --body "..."

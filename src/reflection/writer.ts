@@ -1,14 +1,30 @@
 import type { Card } from "../cards/index.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
+import type { Completer } from "./complete/types.ts";
+import { proposeCard } from "./merge-propose.ts";
 
 export type WriteResult = {
   written: Card[];
+  merged: Card[];
   skipped: string[];
 };
 
-/** Upsert general proposals (title / use_when / body required). */
-export function writeProposedCards(store: CardStore, proposals: ProposeInput[]): WriteResult {
+export type WriteProposedOptions = {
+  completer?: Completer;
+  lexicalOnly?: boolean;
+};
+
+/**
+ * Propose each card via vector k-NN + agent merge (default), or lexical upsert.
+ * Applies taxonomy paths after write (replace on create, union on merge).
+ */
+export async function writeProposedCards(
+  store: CardStore,
+  proposals: ProposeInput[],
+  opts: WriteProposedOptions = {},
+): Promise<WriteResult> {
   const written: Card[] = [];
+  const merged: Card[] = [];
   const skipped: string[] = [];
 
   for (const proposal of proposals) {
@@ -19,7 +35,13 @@ export function writeProposedCards(store: CardStore, proposals: ProposeInput[]):
       skipped.push(title || "(invalid)");
       continue;
     }
-    written.push(store.upsert({ title, use_when: useWhen, body }));
+    const outcome = await proposeCard(
+      store,
+      { title, use_when: useWhen, body, paths: proposal.paths },
+      { completer: opts.completer, lexicalOnly: opts.lexicalOnly },
+    );
+    written.push(outcome.card);
+    if (outcome.merged) merged.push(outcome.card);
   }
-  return { written, skipped };
+  return { written, merged, skipped };
 }

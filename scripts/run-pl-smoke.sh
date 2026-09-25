@@ -41,11 +41,13 @@ if [[ "$ARM" == "muton" ]]; then
   MOUNTS_FILE="$ROOT/harbor/mounts-hooks.json"
   write_mounts "$ROOT" "$BUN_BIN_RESOLVED" "$MOUNTS_FILE"
   cold_hive "$ROOT"
+  # Non-SQL tips: default policy is alb-database-analytics.md (F1 SQL).
   HARBOR_ARGS+=(
     --ae "MUTON_MODEL=${MODEL}"
     --ae "MUTON_API_KEY=${OPENAI_API_KEY}"
     --ae "MUTON_VECTOR=1"
     --ae "MUTON_MAX_SEARCHES=10"
+    --ae "MUTON_TASK_POLICY=/opt/muton/policies/example-generic.md"
     --ae "BASH_ENV=/opt/muton/bashenv.sh"
     --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
     --mounts "$(cat "$MOUNTS_FILE")"
