@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 // @bun
+import { createRequire } from "node:module";
 var __create = Object.create;
 var __getProtoOf = Object.getPrototypeOf;
 var __defProp = Object.defineProperty;
@@ -33,7 +34,7 @@ var __toESM = (mod, isNodeMode, target) => {
   return to;
 };
 var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
-var __require = import.meta.require;
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // node_modules/yaml/dist/nodes/identity.js
 var require_identity = __commonJS(function(exports) {
@@ -3468,15 +3469,15 @@ var require_errors = __commonJS(function(exports) {
     let lineStr = src.substring(lc.lineStarts[line - 1], lc.lineStarts[line]).replace(/[\n\r]+$/, "");
     if (ci >= 60 && lineStr.length > 80) {
       const trimStart = Math.min(ci - 39, lineStr.length - 79);
-      lineStr = "\u2026" + lineStr.substring(trimStart);
+      lineStr = "…" + lineStr.substring(trimStart);
       ci -= trimStart - 1;
     }
     if (lineStr.length > 80)
-      lineStr = lineStr.substring(0, 79) + "\u2026";
+      lineStr = lineStr.substring(0, 79) + "…";
     if (line > 1 && /^ *$/.test(lineStr.substring(0, ci))) {
       let prev = src.substring(lc.lineStarts[line - 2], lc.lineStarts[line - 1]);
       if (prev.length > 80)
-        prev = prev.substring(0, 79) + `\u2026
+        prev = prev.substring(0, 79) + `…
 `;
       lineStr = prev + lineStr;
     }
@@ -4530,8 +4531,8 @@ var require_resolve_flow_scalar = __commonJS(function(exports) {
     r: "\r",
     t: "\t",
     v: "\v",
-    N: "\x85",
-    _: "\xA0",
+    N: "",
+    _: " ",
     L: "\u2028",
     P: "\u2029",
     " ": " ",
@@ -13956,8 +13957,8 @@ var require_dist = __commonJS(function(exports, module) {
 });
 
 // src/store/index.ts
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "fs";
-import { join as join2 } from "path";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join as join2 } from "node:path";
 
 // node_modules/yaml/dist/index.js
 var composer = require_composer();
@@ -14058,8 +14059,8 @@ function slugify(title) {
   return slug || "card";
 }
 // src/store/fs.ts
-import { homedir } from "os";
-import { join } from "path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 function mutonHome(override) {
   if (override)
     return override;
@@ -14162,7 +14163,7 @@ function buildTree(pathCounts, rootPrefix = "", depth = 2) {
 }
 function formatTree(nodes, indent = 0) {
   if (nodes.length === 0)
-    return "(empty hive \u2014 no categorized cards yet)";
+    return "(empty hive — no categorized cards yet)";
   const lines = [];
   for (const n of nodes) {
     lines.push(`${"  ".repeat(indent)}${n.path}/  (${n.count})`);
@@ -14603,7 +14604,7 @@ class CardStore {
     const root = rawRoot ? normalizePaths([rawRoot]).find((p) => p !== UNCATEGORIZED_PATH) ?? normalizePathLoose(rawRoot) : "";
     const counts = this.getIndex().pathCounts();
     const nodes = buildTree(counts, root, depth);
-    const text = this.cardCount() === 0 ? "(empty hive \u2014 0 cards)" : counts.size === 0 ? `(${this.cardCount()} cards, none categorized yet)` : nodes.length === 0 && root ? `(no cards under ${root}/)` : formatTree(nodes);
+    const text = this.cardCount() === 0 ? "(empty hive — 0 cards)" : counts.size === 0 ? `(${this.cardCount()} cards, none categorized yet)` : nodes.length === 0 && root ? `(no cards under ${root}/)` : formatTree(nodes);
     return {
       total_cards: this.cardCount(),
       path_assignments: this.getIndex().totalPathAssignments(),
@@ -14735,7 +14736,7 @@ function normalizeHookInput(eventName, rawInput, hostHint) {
 }
 
 // src/hooks/prompt-submit.ts
-import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 
 // src/search/rerank.ts
 function rerank(hits, query) {
@@ -14775,7 +14776,7 @@ function rerank(hits, query) {
 }
 
 // src/search/rewrite.ts
-import { existsSync, readFileSync as readFileSync2 } from "fs";
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
 var BOILERPLATE = new Set([
   "formula",
   "database",
@@ -14942,7 +14943,7 @@ function formatContext(hits, maxChars) {
   if (hits.length === 0)
     return "";
   const parts = [
-    "MUTON CARDS (trusted shared memory \u2014 prefer these facts when they apply)"
+    "MUTON CARDS (trusted shared memory — prefer these facts when they apply)"
   ];
   let used = parts[0].length;
   for (const hit of hits) {
@@ -14958,9 +14959,9 @@ function formatContext(hits, maxChars) {
 }
 
 // src/hooks/session-start.ts
-import { execSync } from "child_process";
-import { existsSync as existsSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "fs";
-import { basename } from "path";
+import { execSync } from "node:child_process";
+import { existsSync as existsSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { basename } from "node:path";
 function loadState(home) {
   try {
     const p = sessionStatePath(home);
@@ -15056,9 +15057,9 @@ function handlePromptSubmit(event, home) {
 }
 
 // src/hooks/session-end.ts
-import { spawn } from "child_process";
-import { copyFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "fs";
-import { join as join3 } from "path";
+import { spawn } from "node:child_process";
+import { copyFileSync, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "node:fs";
+import { join as join3 } from "node:path";
 function resolveMutonBin() {
   const entry = process.argv[1];
   if (entry && existsSync4(entry))
@@ -15156,9 +15157,9 @@ async function cmdHook(args) {
 }
 
 // src/hosts/claude.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "fs";
-import { homedir as homedir2 } from "os";
-import { dirname, join as join4 } from "path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { dirname, join as join4 } from "node:path";
 function installClaude() {
   const path = join4(homedir2(), ".claude", "settings.json");
   mkdirSync3(dirname(path), { recursive: true });
@@ -15187,9 +15188,9 @@ function installClaude() {
 }
 
 // src/hosts/codex.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "fs";
-import { homedir as homedir3 } from "os";
-import { dirname as dirname2, join as join5 } from "path";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { dirname as dirname2, join as join5 } from "node:path";
 function installCodex() {
   const path = join5(homedir3(), ".codex", "hooks.json");
   mkdirSync4(dirname2(path), { recursive: true });
@@ -15227,9 +15228,9 @@ function installCodex() {
 }
 
 // src/hosts/cursor.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "fs";
-import { homedir as homedir4 } from "os";
-import { dirname as dirname3, join as join6 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { dirname as dirname3, join as join6 } from "node:path";
 function mutonHookCmd(event) {
   return `muton hook ${event} --host cursor`;
 }
@@ -15266,10 +15267,10 @@ function installCursor() {
 }
 
 // src/hosts/pi.ts
-import { mkdirSync as mkdirSync6, writeFileSync as writeFileSync7 } from "fs";
-import { homedir as homedir5 } from "os";
-import { dirname as dirname4, join as join7 } from "path";
-var EXTENSION = `// Muton Pi extension \u2014 inject Cards; defer reflect until post-verify
+import { mkdirSync as mkdirSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { dirname as dirname4, join as join7 } from "node:path";
+var EXTENSION = `// Muton Pi extension — inject Cards; defer reflect until post-verify
 import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 
@@ -29877,7 +29878,7 @@ var EMPTY_COMPLETION_RESULT = {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process2 from "process";
+import process2 from "node:process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
@@ -30066,7 +30067,7 @@ async function searchCardsVector(store, query, options = {}) {
 }
 
 // src/reflection/complete/host-cli.ts
-import { spawn as spawn2 } from "child_process";
+import { spawn as spawn2 } from "node:child_process";
 function usableSessionId(id) {
   const s = id?.trim() ?? "";
   return s.length > 0 && s !== "unknown";
@@ -30253,13 +30254,13 @@ function createCompleter() {
 }
 
 // src/reflection/jev-merge.ts
-import { appendFileSync, mkdirSync as mkdirSync7 } from "fs";
-import { join as join8 } from "path";
-var DEFAULT_THRESHOLD = 0.5;
+import { appendFileSync, mkdirSync as mkdirSync7 } from "node:fs";
+import { join as join8 } from "node:path";
+var DEFAULT_THRESHOLD = 0.8;
 var NOUL_INSTRUCTIONS = "Should these two knowledge cards be merged into one? Answer yes if they are the same durable fact, near-duplicates, or one is a refinement/extension of the other. Answer no if they are distinct durable facts that should remain separate cards.";
 var NOUL_CRITERIA = {
-  true: "Same fact, near-duplicate, or refinement \u2014 merge into one card",
-  false: "Distinct durable facts \u2014 keep as separate cards"
+  true: "Same fact, near-duplicate, or refinement — merge into one card",
+  false: "Distinct durable facts — keep as separate cards"
 };
 function jevMergeEnabled() {
   const v = (process.env.MUTON_JEV_MERGE ?? "1").trim().toLowerCase();
@@ -30747,15 +30748,15 @@ async function cmdPropose(args) {
 }
 
 // src/reflection/index.ts
-import { appendFileSync as appendFileSync2, readFileSync as readFileSync10 } from "fs";
-import { join as join10 } from "path";
+import { appendFileSync as appendFileSync2, readFileSync as readFileSync10 } from "node:fs";
+import { join as join10 } from "node:path";
 
 // src/reflection/prompt.ts
-import { existsSync as existsSync9, readFileSync as readFileSync9 } from "fs";
-import { join as join9 } from "path";
+import { existsSync as existsSync9, readFileSync as readFileSync9 } from "node:fs";
+import { join as join9 } from "node:path";
 
 // src/policy/task-policy.ts
-import { existsSync as existsSync8, readFileSync as readFileSync8 } from "fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
 var AGENT_TIPS_HEADING = /^##\s+agent\s+tips\s*$/i;
 var REFLECTION_HEADING = /^##\s+reflection\s*$/i;
 var ANY_H2 = /^##\s+/;
@@ -30840,19 +30841,19 @@ function extractGuidelineBullets(tips) {
 }
 
 // src/reflection/prompt.ts
-var DEFAULT_REFLECTION_PROMPT = `You extract 0\u20135 durable knowledge cards from this session transcript for a shared hive memory (Muton).
+var DEFAULT_REFLECTION_PROMPT = `You extract 0–5 durable knowledge cards from this session transcript for a shared hive memory (Muton).
 
 Return ONLY a JSON array. No markdown fences. No commentary. Each item:
 {
   "title": "short distinctive name (also becomes the card filename)",
   "use_when": "situation, entity, or cue when this card applies",
-  "body": "the durable fact \u2014 concrete and reusable",
+  "body": "the durable fact — concrete and reusable",
   "paths": ["domain/subtopic", "lookup"]
 }
 
 Taxonomy paths (soft directory for browsing the hive later):
-- paths is a JSON array of 1\u20133 slash-separated folders (multi-parent OK).
-- Invent paths that fit the fact's domain \u2014 do not force unrelated labels.
+- paths is a JSON array of 1–3 slash-separated folders (multi-parent OK).
+- Invent paths that fit the fact's domain — do not force unrelated labels.
 - Example top-level folders when they fit: schema, encoding, lookup, preference, procedure, api.
 - Add a second segment when useful (e.g. schema/joins, api/auth, deploy/k8s).
 - Prefer stable reusable folders over one-off episode names when the fact is general.
@@ -30862,7 +30863,7 @@ Rules:
 - Prefer concrete state: APIs, encodings, workarounds, environment facts, non-obvious constraints.
 - Skip: one-off plans, full transcripts, secrets/credentials, generic advice, reminders the task already states, ephemeral debugging chatter.
 - Near-duplicates may be merged into existing hive cards later; prefer distinct durable facts. Do NOT delete cards. Do NOT invent facts not supported by the transcript.
-- Prefer fewer high-value cards (0\u20135). Return [] if nothing durable was learned.
+- Prefer fewer high-value cards (0–5). Return [] if nothing durable was learned.
 - title and use_when are mandatory and non-empty. body is the durable fact. paths should be present when you can classify the card.`;
 function loadReflectionPrompt(opts) {
   const cwd = opts?.cwd ?? process.cwd();
@@ -31068,9 +31069,9 @@ async function cmdReflect(args) {
 }
 
 // src/cli/commands/search.ts
-import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync8 } from "fs";
-import { createHash } from "crypto";
-import { join as join11 } from "path";
+import { appendFileSync as appendFileSync3, mkdirSync as mkdirSync8 } from "node:fs";
+import { createHash } from "node:crypto";
+import { join as join11 } from "node:path";
 function logLine(file, payload) {
   const home = process.env.MUTON_HOME;
   if (!home)
