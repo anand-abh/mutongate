@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repeatable database-analytics splits for mutongate (Harbor pi + hybrid/gate).
+# Repeatable database-analytics splits for mutongate (Harbor pi + vector muton_search).
 #
 # Sizes:
 #   10  | smoke            first 10 → <bench>/.alb/smoke/database-analytics
@@ -9,7 +9,7 @@
 # Usage:
 #   ./scripts/run-database-analytics.sh 10
 #   ./scripts/run-database-analytics.sh --n 40
-#   ./scripts/run-database-analytics.sh full 3 3
+#   ./scripts/run-database-analytics.sh full
 #   ./scripts/run-database-analytics.sh smoke --dry-run
 #
 # Env: AGENT_LEARNING_BENCH, BUN_BIN, OPENAI_API_KEY, MUTON_MODEL
@@ -25,13 +25,13 @@ export MUTONGATE_ROOT="$ROOT"
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/run-database-analytics.sh <size> [k_instruction] [k_question] [job_name]
+Usage: ./scripts/run-database-analytics.sh <size> [job_name]
 
   size: 10|smoke   first 10 steps (alb smoke / alb prepare --n 10)
         40|medium  first 40 steps (alb run --n 40 / alb prepare --n 40)
         174|full|dull  all 174 steps (tasks/database-analytics)
 
-  k_* default to 3. Extra Harbor flags go after --.
+  Extra Harbor flags go after --.
 
   10 and 40 both write the alb slice path:
     $AGENT_LEARNING_BENCH/.alb/smoke/database-analytics
@@ -61,8 +61,6 @@ resolve_size() {
 
 DRY_RUN="${MUTONGATE_DRY_RUN:-0}"
 SIZE_RAW=""
-K_INST="${MUTON_HYBRID_K_INSTRUCTION:-3}"
-K_Q="${MUTON_HYBRID_K_QUESTION:-3}"
 JOB_NAME=""
 POSITIONAL=()
 EXTRA=()
@@ -116,13 +114,7 @@ if [[ -z "$SIZE_RAW" ]]; then
 fi
 
 if [[ ${#POSITIONAL[@]} -ge 1 ]]; then
-  K_INST="${POSITIONAL[0]}"
-fi
-if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
-  K_Q="${POSITIONAL[1]}"
-fi
-if [[ ${#POSITIONAL[@]} -ge 3 ]]; then
-  JOB_NAME="${POSITIONAL[2]}"
+  JOB_NAME="${POSITIONAL[0]}"
 fi
 
 N="$(resolve_size "$SIZE_RAW")"
@@ -167,7 +159,7 @@ if [[ -n "$SLICE_DEST" ]]; then
 fi
 
 export MUTONGATE_DRY_RUN="$DRY_RUN"
-HARBOR_ARGS=("$K_INST" "$K_Q" "$TASK" "$JOB_NAME")
+HARBOR_ARGS=("$TASK" "$JOB_NAME")
 if [[ "$DRY_RUN" == "1" ]]; then
   HARBOR_ARGS+=(--dry-run)
 fi

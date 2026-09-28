@@ -19,6 +19,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS cards_fts USING fts5(
   created_at UNINDEXED,
   updated_at UNINDEXED
 );
+CREATE TABLE IF NOT EXISTS card_embeddings (
+  slug TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  dims INTEGER NOT NULL,
+  vector BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS card_paths (
+  slug TEXT NOT NULL,
+  path TEXT NOT NULL,
+  PRIMARY KEY (slug, path)
+);
+CREATE INDEX IF NOT EXISTS idx_card_paths_path ON card_paths(path);
 `;
 
 export type FtsHit = {
@@ -29,6 +41,13 @@ export type FtsHit = {
   created_at: string;
   updated_at: string;
   bm25: number;
+};
+
+export type EmbeddingRow = {
+  slug: string;
+  model: string;
+  dims: number;
+  vector: Buffer;
 };
 
 export class CardIndex {
@@ -65,18 +84,91 @@ export class CardIndex {
       .run(card.slug, card.title, card.use_when, card.body, card.created_at, card.updated_at);
   }
 
+  upsertEmbedding(slug: string, model: string, vector: Buffer): void {
+    this.db
+      .prepare(
+        `INSERT INTO card_embeddings (slug, model, dims, vector)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(slug) DO UPDATE SET
+           model=excluded.model,
+           dims=excluded.dims,
+           vector=excluded.vector`,
+      )
+      .run(slug, model, vector.byteLength / 4, vector);
+  }
+
+  listEmbeddings(): EmbeddingRow[] {
+    return this.db
+      .prepare(`SELECT slug, model, dims, vector FROM card_embeddings`)
+      .all() as EmbeddingRow[];
+  }
+
   remove(slug: string): void {
     this.db.prepare(`DELETE FROM cards WHERE slug = ?`).run(slug);
     this.db.prepare(`DELETE FROM cards_fts WHERE slug = ?`).run(slug);
+    this.db.prepare(`DELETE FROM card_embeddings WHERE slug = ?`).run(slug);
+    this.db.prepare(`DELETE FROM card_paths WHERE slug = ?`).run(slug);
   }
 
   clear(): void {
-    this.db.exec(`DELETE FROM cards; DELETE FROM cards_fts;`);
+    this.db.exec(
+      `DELETE FROM cards; DELETE FROM cards_fts; DELETE FROM card_embeddings; DELETE FROM card_paths;`,
+    );
   }
 
   rebuild(cards: Card[]): void {
     this.clear();
     for (const card of cards) this.upsert(card);
+  }
+
+  setPaths(slug: string, paths: string[]): void {
+    this.db.prepare(`DELETE FROM card_paths WHERE slug = ?`).run(slug);
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO card_paths (slug, path) VALUES (?, ?)`);
+    for (const path of paths) {
+      insert.run(slug, path);
+    }
+  }
+
+  /** Union paths onto an existing slug (merge case). */
+  addPaths(slug: string, paths: string[]): void {
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO card_paths (slug, path) VALUES (?, ?)`);
+    for (const path of paths) {
+      insert.run(slug, path);
+    }
+  }
+
+  getPaths(slug: string): string[] {
+    const rows = this.db
+      .prepare(`SELECT path FROM card_paths WHERE slug = ? ORDER BY path`)
+      .all(slug) as Array<{ path: string }>;
+    return rows.map((r) => r.path);
+  }
+
+  /** Exact path card counts (one row per stored path string). */
+  pathCounts(): Map<string, number> {
+    const rows = this.db
+      .prepare(`SELECT path, COUNT(*) AS n FROM card_paths GROUP BY path`)
+      .all() as Array<{ path: string; n: number }>;
+    return new Map(rows.map((r) => [r.path, r.n]));
+  }
+
+  /** Cards whose paths equal `path` or are under `path/` (prefix). */
+  listByPath(path: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT slug FROM card_paths
+         WHERE path = ? OR path LIKE ?
+         ORDER BY slug`,
+      )
+      .all(path, `${path}/%`) as Array<{ slug: string }>;
+    return rows.map((r) => r.slug);
+  }
+
+  totalPathAssignments(): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM card_paths`).get() as {
+      n: number;
+    };
+    return row.n;
   }
 
   /** BM25 search; lower bm25 is better in SQLite. */

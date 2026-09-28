@@ -1,7 +1,7 @@
 {
   "name": "mutongate",
-  "version": "0.2.1-qr3-cardgate",
-  "description": "Hybrid Muton search + stock reflect + LLM card gate",
+  "version": "0.3.0",
+  "description": "Vector Muton hive + agentic muton_search + ungated stock reflect",
   "type": "module",
   "bin": {
     "muton": "dist/cli.js"

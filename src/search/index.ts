@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import type { CardStore } from "../store/index.ts";
 import type { RankedHit } from "./rerank.ts";
 import { rerank } from "./rerank.ts";
@@ -11,14 +10,10 @@ export type SearchOptions = {
   excludeSlugs?: Set<string>;
   /** Skip query rewrite (tests / debugging). */
   skipRewrite?: boolean;
-  /** Dual-channel: k_instruction from prompt + k_question from question file. */
-  hybrid?: boolean;
-  kInstruction?: number;
-  kQuestion?: number;
 };
 
 export type SearchChannel = {
-  name: "instruction" | "question";
+  name: "fts" | "vector";
   query_chars: number;
   query_head: string;
   n_hits: number;
@@ -33,9 +28,7 @@ export type SearchResult = {
 };
 
 const DEFAULT_K = 5;
-const DEFAULT_MAX_CHARS = 6000;
-const DEFAULT_K_INSTRUCTION = 3;
-const DEFAULT_K_QUESTION = 3;
+const DEFAULT_MAX_CHARS = 100_000;
 
 function envFlag(name: string): boolean {
   const v = process.env[name];
@@ -47,24 +40,6 @@ function envInt(name: string, fallback: number): number {
   if (v === undefined || v === "") return fallback;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-function readQuestionText(): string | null {
-  const candidates = [
-    process.env.MUTON_QUESTION_PATH,
-    "/app/question.md",
-  ].filter((p): p is string => Boolean(p));
-  for (const path of candidates) {
-    try {
-      if (existsSync(path)) {
-        const text = readFileSync(path, "utf8").trim();
-        if (text) return text;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return null;
 }
 
 function rankQuery(
@@ -83,100 +58,17 @@ function rankQuery(
   return ranked.slice(0, k);
 }
 
-/**
- * Hybrid k+k: instruction prompt → k_instruction Cards, question.md → k_question.
- * Defaults 3+3. Override via options or MUTON_HYBRID_K_INSTRUCTION /
- * MUTON_HYBRID_K_QUESTION. No rewrite — question file text as-is.
- */
-export function searchCardsHybrid(
-  store: CardStore,
-  instruction: string,
-  options: SearchOptions = {},
-): SearchResult {
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const kInst =
-    options.kInstruction ??
-    envInt("MUTON_HYBRID_K_INSTRUCTION", DEFAULT_K_INSTRUCTION);
-  const kQ =
-    options.kQuestion ?? envInt("MUTON_HYBRID_K_QUESTION", DEFAULT_K_QUESTION);
-  const exclude = options.excludeSlugs ?? new Set<string>();
-  const channels: SearchChannel[] = [];
-
-  const instHits = rankQuery(
-    store,
-    instruction,
-    kInst,
-    exclude,
-    options.minScore,
-  );
-  channels.push({
-    name: "instruction",
-    query_chars: instruction.length,
-    query_head: instruction.slice(0, 120).replace(/\n/g, "\\n"),
-    n_hits: instHits.length,
-    slugs: instHits.map((h) => h.slug),
-  });
-
-  const taken = new Set<string>([...exclude, ...instHits.map((h) => h.slug)]);
-  const question = readQuestionText();
-  let qHits: RankedHit[] = [];
-  if (question) {
-    qHits = rankQuery(store, question, kQ, taken, options.minScore);
-    channels.push({
-      name: "question",
-      query_chars: question.length,
-      query_head: question.slice(0, 120).replace(/\n/g, "\\n"),
-      n_hits: qHits.length,
-      slugs: qHits.map((h) => h.slug),
-    });
-  } else {
-    channels.push({
-      name: "question",
-      query_chars: 0,
-      query_head: "",
-      n_hits: 0,
-      slugs: [],
-    });
-  }
-
-  // Instruction/meta first, then question/task Cards.
-  const hits = [...instHits, ...qHits];
-  const context = formatContext(hits, maxChars);
-  return {
-    hits,
-    context,
-    rewrite: {
-      original: instruction,
-      rewritten: question
-        ? `[hybrid] instruction[${kInst}]+question[${kQ}]`
-        : `[hybrid] instruction[${kInst}] only`,
-      source: question ? "question_file" : "prompt",
-    },
-    channels,
-  };
-}
-
-/** Search Cards with BM25 then rerank; format injection context. */
+/** Search Cards with BM25 then rerank (CLI/MCP fallback when vector is off). */
 export function searchCards(
   store: CardStore,
   query: string,
   options: SearchOptions = {},
 ): SearchResult {
-  const hybrid =
-    options.hybrid ||
-    envFlag("MUTON_HYBRID") ||
-    envFlag("MUTON_HYBRID_SEARCH");
-  if (hybrid) {
-    return searchCardsHybrid(store, query, options);
-  }
-
   const k = options.k ?? DEFAULT_K;
-  const maxChars = options.maxChars ?? DEFAULT_MAX_CHARS;
-  const exclude = options.excludeSlugs ?? new Set<string>();
+  const maxChars = options.maxChars ?? envInt("MUTON_MAX_CHARS", DEFAULT_MAX_CHARS);
+  const exclude = new Set<string>(options.excludeSlugs ?? []);
 
-  const skipRewrite =
-    options.skipRewrite ||
-    envFlag("MUTON_SKIP_REWRITE");
+  const skipRewrite = options.skipRewrite || envFlag("MUTON_SKIP_REWRITE");
   const rewrite = skipRewrite
     ? {
         original: query,
@@ -190,9 +82,22 @@ export function searchCards(
     return { hits: [], context: "", rewrite };
   }
 
-  const ranked = rankQuery(store, effective, k, exclude, options.minScore);
-  const context = formatContext(ranked, maxChars);
-  return { hits: ranked, context, rewrite };
+  const hits = rankQuery(store, effective, k, exclude, options.minScore);
+  const context = formatContext(hits, maxChars);
+  return {
+    hits,
+    context,
+    rewrite,
+    channels: [
+      {
+        name: "fts",
+        query_chars: effective.length,
+        query_head: effective.slice(0, 120).replace(/\n/g, "\\n"),
+        n_hits: hits.length,
+        slugs: hits.map((h) => h.slug),
+      },
+    ],
+  };
 }
 
 export function formatContext(hits: RankedHit[], maxChars: number): string {

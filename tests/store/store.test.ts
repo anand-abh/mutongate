@@ -97,4 +97,31 @@ describe("CardStore", () => {
     expect(second.title).toBe("Stripe 200 error body");
     expect(store.cardCount()).toBe(1);
   });
+
+  test("taxonomy paths: set, tree, ls, multi-parent", () => {
+    home = mkdtempSync(join(tmpdir(), "muton-store-"));
+    store = new CardStore(home);
+    const a = store.writeNew({
+      title: "Qualifying schema",
+      use_when: "Q1 lookups",
+      body: "qualifying.q1 text times",
+    });
+    const b = store.writeNew({
+      title: "Circuit URL",
+      use_when: "circuit url",
+      body: "circuits.url",
+    });
+    store.setPaths(a.slug, ["schema/qualifying", "lookup"]);
+    store.setPaths(b.slug, ["lookup/circuits"]);
+    expect(store.getPaths(a.slug).sort()).toEqual(["lookup", "schema/qualifying"]);
+    const tree = store.tree({ depth: 2 });
+    expect(tree.total_cards).toBe(2);
+    expect(tree.path_assignments).toBe(3);
+    expect(tree.text).toContain("schema/");
+    expect(tree.text).toContain("lookup/");
+    const listing = store.ls("lookup");
+    expect(listing.cards.map((c) => c.slug).sort()).toEqual([a.slug, b.slug].sort());
+    store.addPaths(a.slug, ["encoding"]);
+    expect(store.getPaths(a.slug)).toContain("encoding");
+  });
 });

@@ -4,8 +4,8 @@
 #   <bench>/tasks/database-analytics        (full 174)
 #
 # Usage:
-#   ./scripts/harbor-run.sh <k_instruction> <k_question> <task_path> [job_name]
-#   ./scripts/harbor-run.sh 3 3 "$BENCH/.alb/smoke/database-analytics" --dry-run
+#   ./scripts/harbor-run.sh <task_path> [job_name]
+#   ./scripts/harbor-run.sh "$BENCH/.alb/smoke/database-analytics" --dry-run
 set -euo pipefail
 export PATH="${HOME}/.bun/bin:${HOME}/.local/bin:${PATH}"
 
@@ -55,17 +55,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ ${#POSITIONAL[@]} -lt 3 ]]; then
+if [[ ${#POSITIONAL[@]} -lt 1 ]]; then
   usage >&2
   exit 2
 fi
 
-K_INST="${POSITIONAL[0]}"
-K_Q="${POSITIONAL[1]}"
-TASK="${POSITIONAL[2]}"
+TASK="${POSITIONAL[0]}"
 JOB_NAME="mutongate-database-analytics"
-if [[ ${#POSITIONAL[@]} -ge 4 ]]; then
-  JOB_NAME="${POSITIONAL[3]}"
+if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
+  JOB_NAME="${POSITIONAL[1]}"
 fi
 
 if [[ ! -d "$TASK" ]]; then
@@ -95,7 +93,20 @@ MOUNTS="$(cat "$MOUNTS_FILE")"
 BENCH="$(find_bench_root "$TASK")"
 STEPS="$(count_steps "$TASK/task.toml")"
 MODEL="${MUTON_MODEL:-gpt-5.6-luna}"
-CARD_GATE="${MUTON_CARD_GATE:-1}"
+# Task-specific tips/reflection extras (one markdown file). Override per benchmark.
+TASK_POLICY="${MUTON_TASK_POLICY:-/opt/muton/policies/alb-database-analytics.md}"
+# Typesafe Jev Choice after muton_tree (get|search|tool). Load key from env or secrets file.
+if [[ -z "${TYPESAFE_API_KEY:-}" && -f "${HOME}/.config/muton-secrets/typesafe.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  # shellcheck disable=SC1090
+  source "${HOME}/.config/muton-secrets/typesafe.env"
+  set +a
+fi
+JEV_CHOICE="${MUTON_JEV_CHOICE:-1}"
+JEV_MODEL="${MUTON_JEV_MODEL:-jev-latest}"
+JEV_MERGE="${MUTON_JEV_MERGE:-1}"
+JEV_MERGE_THRESHOLD="${MUTON_JEV_MERGE_THRESHOLD:-0.8}"
 
 CMD=(
   harbor run -p "$TASK" -a pi -m "openai/${MODEL}"
@@ -105,10 +116,14 @@ CMD=(
   --ae "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
   --ae "MUTON_MODEL=${MODEL}"
   --ae "MUTON_API_KEY=${OPENAI_API_KEY:-}"
-  --ae "MUTON_HYBRID=1"
-  --ae "MUTON_HYBRID_K_INSTRUCTION=${K_INST}"
-  --ae "MUTON_HYBRID_K_QUESTION=${K_Q}"
-  --ae "MUTON_CARD_GATE=${CARD_GATE}"
+  --ae "MUTON_VECTOR=1"
+  --ae "MUTON_MAX_SEARCHES=10"
+  --ae "MUTON_TASK_POLICY=${TASK_POLICY}"
+  --ae "MUTON_JEV_CHOICE=${JEV_CHOICE}"
+  --ae "MUTON_JEV_MODEL=${JEV_MODEL}"
+  --ae "MUTON_JEV_MERGE=${JEV_MERGE}"
+  --ae "MUTON_JEV_MERGE_THRESHOLD=${JEV_MERGE_THRESHOLD}"
+  --ae "TYPESAFE_API_KEY=${TYPESAFE_API_KEY:-}"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -125,7 +140,10 @@ echo "  task:  ${TASK}"
 echo "  bench: ${BENCH}"
 echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
-echo "  hybrid: ${K_INST}+${K_Q}  card_gate: ${CARD_GATE}  (cold hive each run)"
+echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
+echo "  task_policy: ${TASK_POLICY}"
+echo "  jev_choice: ${JEV_CHOICE}  model: ${JEV_MODEL}  typesafe_key: $([ -n "${TYPESAFE_API_KEY:-}" ] && echo set || echo missing)"
+echo "  jev_merge: ${JEV_MERGE}  threshold: ${JEV_MERGE_THRESHOLD}"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'
