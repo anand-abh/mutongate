@@ -95,6 +95,16 @@ STEPS="$(count_steps "$TASK/task.toml")"
 MODEL="${MUTON_MODEL:-gpt-5.6-luna}"
 # Task-specific tips/reflection extras (one markdown file). Override per benchmark.
 TASK_POLICY="${MUTON_TASK_POLICY:-/opt/muton/policies/alb-database-analytics.md}"
+# Typesafe Jev Choice after muton_tree (get|search|tool). Load key from env or secrets file.
+if [[ -z "${TYPESAFE_API_KEY:-}" && -f "${HOME}/.config/muton-secrets/typesafe.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  # shellcheck disable=SC1090
+  source "${HOME}/.config/muton-secrets/typesafe.env"
+  set +a
+fi
+JEV_CHOICE="${MUTON_JEV_CHOICE:-1}"
+JEV_MODEL="${MUTON_JEV_MODEL:-jev-latest}"
 
 CMD=(
   harbor run -p "$TASK" -a pi -m "openai/${MODEL}"
@@ -107,6 +117,9 @@ CMD=(
   --ae "MUTON_VECTOR=1"
   --ae "MUTON_MAX_SEARCHES=10"
   --ae "MUTON_TASK_POLICY=${TASK_POLICY}"
+  --ae "MUTON_JEV_CHOICE=${JEV_CHOICE}"
+  --ae "MUTON_JEV_MODEL=${JEV_MODEL}"
+  --ae "TYPESAFE_API_KEY=${TYPESAFE_API_KEY:-}"
   --ae "BASH_ENV=/opt/muton/bashenv.sh"
   --ae "PI_CODING_AGENT_DIR=/tmp/pi-muton"
   --mounts "$MOUNTS"
@@ -125,6 +138,7 @@ echo "  bun:   ${BUN_BIN_RESOLVED}"
 echo "  job:   ${JOB_NAME}"
 echo "  vector-tool: on  max_searches: 10  (cold hive; no auto-inject)"
 echo "  task_policy: ${TASK_POLICY}"
+echo "  jev_choice: ${JEV_CHOICE}  model: ${JEV_MODEL}  typesafe_key: $([ -n "${TYPESAFE_API_KEY:-}" ] && echo set || echo missing)"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   printf 'dry-run:'
