@@ -4,6 +4,11 @@ import { searchCardsVector } from "../search/vector.ts";
 import type { CardStore, ProposeInput } from "../store/index.ts";
 import { createCompleter } from "./complete/index.ts";
 import type { Completer } from "./complete/types.ts";
+import {
+  decideJevMerge,
+  expandMergedFields,
+  jevMergeEnabled,
+} from "./jev-merge.ts";
 
 const DEFAULT_MERGE_K = 2;
 
@@ -20,6 +25,8 @@ export type ProposeCardOptions = {
   now?: Date;
   /** Skip agent merge; use lexical upsert only. */
   lexicalOnly?: boolean;
+  /** Home for jev-merge.log (defaults to store.home). */
+  home?: string;
 };
 
 function envInt(name: string, fallback: number): number {
@@ -124,8 +131,10 @@ function parseMergeDecision(raw: string, allowedSlugs: Set<string>): MergeDecisi
 }
 
 /**
- * Propose a card: vector k-NN (default 2) → agent merge-or-create → expand or writeNew.
- * Falls back to lexical upsert when merge agent is off, hive has no embeddings, or the agent call fails.
+ * Propose a card: embed → vector k-NN (default 2) → Jev Noul merge (preferred) or
+ * agent merge-or-create → expand or writeNew. Re-embeds the result so later
+ * proposals in the same reflect batch can near-dup against it.
+ * Falls back to lexical upsert when merge agent is off, neighbors missing, or calls fail.
  * Callers that pass `paths` should apply them via store.setPaths/addPaths after (writer does this).
  */
 export async function proposeCard(
@@ -143,6 +152,17 @@ export async function proposeCard(
     else store.setPaths(card.slug, input.paths);
     return { card, merged };
   };
+  const finish = async (card: Card, merged: boolean): Promise<ProposeOutcome> => {
+    const outcome = applyPaths(card, merged);
+    if (!opts.lexicalOnly) {
+      try {
+        await store.embedCard(outcome.card);
+      } catch {
+        // best-effort; commitProposals also embeds
+      }
+    }
+    return outcome;
+  };
 
   if (opts.lexicalOnly || !mergeAgentEnabled()) {
     const before = store.cardCount();
@@ -153,7 +173,7 @@ export async function proposeCard(
   const k = opts.k ?? envInt("MUTON_MERGE_K", DEFAULT_MERGE_K);
   if (k <= 0 || store.cardCount() === 0) {
     const card = store.writeNew(proposal, now);
-    return applyPaths(card, false);
+    return finish(card, false);
   }
 
   let neighbors: Array<{
@@ -175,14 +195,35 @@ export async function proposeCard(
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return applyPaths(card, beforeSlugs.has(card.slug));
+    return finish(card, beforeSlugs.has(card.slug));
   }
 
   if (neighbors.length === 0) {
     // No embeddings yet — lexical near-dup still helps cold hive.
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return applyPaths(card, beforeSlugs.has(card.slug));
+    return finish(card, beforeSlugs.has(card.slug));
+  }
+
+  // Preferred path: Typesafe Noul per neighbor → merge if max p >= threshold.
+  if (jevMergeEnabled()) {
+    try {
+      const jev = await decideJevMerge(proposal, neighbors, {
+        home: opts.home ?? store.home,
+      });
+      if (jev.action === "merge" && jev.slug) {
+        const neighbor = neighbors.find((n) => n.slug === jev.slug);
+        if (neighbor) {
+          const fields = expandMergedFields(neighbor, proposal);
+          const card = store.update(jev.slug, fields, now);
+          return finish(card, true);
+        }
+      }
+      const card = store.writeNew(proposal, now);
+      return finish(card, false);
+    } catch {
+      // fall through to LLM merge agent / lexical
+    }
   }
 
   const allowed = new Set(neighbors.map((n) => n.slug));
@@ -195,7 +236,7 @@ export async function proposeCard(
     const decision = parseMergeDecision(raw, allowed);
     if (!decision || decision.action === "create") {
       const card = store.writeNew(proposal, now);
-      return applyPaths(card, false);
+      return finish(card, false);
     }
     const card = store.update(
       decision.slug,
@@ -206,11 +247,11 @@ export async function proposeCard(
       },
       now,
     );
-    return applyPaths(card, true);
+    return finish(card, true);
   } catch {
     const beforeSlugs = new Set(store.listCards().map((c) => c.slug));
     const card = store.upsert(proposal, now);
-    return applyPaths(card, beforeSlugs.has(card.slug));
+    return finish(card, beforeSlugs.has(card.slug));
   }
 }
 

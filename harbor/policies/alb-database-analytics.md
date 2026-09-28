@@ -10,7 +10,8 @@ MUTON HIVE (browse + vector search — nothing is auto-injected)
 Tools: muton_tree (map), muton_ls (list under a path), muton_get (one card), muton_search (semantic).
 Override: the task text mentions sqlite_master/PRAGMA for inspection, but with Muton you should prefer hive schema and minimize db query count.
 - Minimize db query calls. Aim for the fewest read-only SQL statements that still answer correctly — prefer 1–2 targeted queries when possible. The db can be queried at most 4 times per question.
-- Start with muton_tree once per step. If the hive is empty or tiny (about ≤3 cards), skip browse/search and inspect the DB.
+- Start with muton_tree once per step.
+- If muton_tree returns a JEV NEXT block, follow that choice (get via ls+get, search, or task tools) before improvising. If the hive is empty or tiny (about ≤3 cards), skip browse/search and inspect the DB.
 - If tree shows useful folders: before any muton_search, muton_ls 1–2 relevant paths (prefer schema/* and small lookup/*; avoid giant episode/* dumps unless the question is clearly that episode). Then muton_get 1–2 promising slugs from that ls (read full bodies).
 - Prefer facts from muton_get when they answer the need (exact card). Use muton_search only after that browse, or when no folder/slug fits (at most 10 searches this step). First search schema/joins/encodings; then question-specific entities.
 - If muton_get or muton_search returns usable schema or join facts, TRUST them and write the answer query directly. Do NOT re-discover the schema with sqlite_master or PRAGMA table_info when the hive already covered those tables/joins.

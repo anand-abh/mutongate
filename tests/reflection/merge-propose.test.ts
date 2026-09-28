@@ -37,6 +37,7 @@ describe("proposeCard vector merge", () => {
   const prevMock = process.env.MUTON_EMBED_MOCK;
   const prevAgent = process.env.MUTON_MERGE_AGENT;
   const prevK = process.env.MUTON_MERGE_K;
+  const prevJev = process.env.MUTON_JEV_MERGE;
 
   afterEach(() => {
     store?.close();
@@ -47,11 +48,14 @@ describe("proposeCard vector merge", () => {
     else process.env.MUTON_MERGE_AGENT = prevAgent;
     if (prevK === undefined) delete process.env.MUTON_MERGE_K;
     else process.env.MUTON_MERGE_K = prevK;
+    if (prevJev === undefined) delete process.env.MUTON_JEV_MERGE;
+    else process.env.MUTON_JEV_MERGE = prevJev;
   });
 
   test("agent merge expands all fields on nearest neighbor", async () => {
     process.env.MUTON_EMBED_MOCK = "1";
     process.env.MUTON_MERGE_AGENT = "1";
+    process.env.MUTON_JEV_MERGE = "0";
     process.env.MUTON_MERGE_K = "2";
     home = mkdtempSync(join(tmpdir(), "muton-merge-"));
     store = new CardStore(home);
@@ -99,6 +103,7 @@ describe("proposeCard vector merge", () => {
 
   test("agent create writes a new card", async () => {
     process.env.MUTON_EMBED_MOCK = "1";
+    process.env.MUTON_JEV_MERGE = "0";
     home = mkdtempSync(join(tmpdir(), "muton-merge-create-"));
     store = new CardStore(home);
     const first = store.writeNew({

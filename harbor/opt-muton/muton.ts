@@ -24,6 +24,7 @@ const CORE_GUIDELINES = [
   "Start with muton_tree when unsure what the hive holds. If empty or tiny, proceed without further Muton calls.",
   "When folders look relevant, muton_ls then muton_get promising slugs before muton_search.",
   "Use muton_search for open-ended semantic recall (per-step search budget applies).",
+  "If a muton_tree result includes a JEV NEXT block, follow that next action (get, search, or tool) before improvising.",
 ];
 
 const DEFAULT_POLICY_PATH = "/opt/muton/policies/alb-database-analytics.md";
@@ -95,6 +96,170 @@ function logHook(payload) {
     );
   } catch {
     // ignore
+  }
+}
+
+function envFlag(name, defaultOn = false) {
+  const v = (process.env[name] || "").trim().toLowerCase();
+  if (!v) return defaultOn;
+  return !(v === "0" || v === "false" || v === "off" || v === "no");
+}
+
+function readQuestionText() {
+  const candidates = [
+    process.env.MUTON_QUESTION_PATH,
+    "/app/question.md",
+  ].filter(Boolean);
+  for (const path of candidates) {
+    try {
+      if (existsSync(path)) {
+        const text = readFileSync(path, "utf8").trim();
+        if (text) return text;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return "";
+}
+
+/** Generic (task-agnostic) Choice options after muton_tree. */
+const JEV_NEXT_CRITERIA = {
+  get: "The tree shows folders or cards that likely match the question. Next: muton_ls on 1–2 promising paths, then muton_get those slugs to read full card bodies. Prefer this over search when a path/slug fit is visible.",
+  search:
+    "The tree is sparse, uncategorized, or no folder/slug clearly fits. Next: muton_search with a focused semantic query about the question. Use get only after search returns a useful slug.",
+  tool: "Hive memory is unlikely to help given this tree (empty/tiny/irrelevant). Next: use ordinary task tools for the environment (inspect, query, edit, etc.). Skip further Muton browse/search unless something later suggests the hive has facts.",
+};
+
+const JEV_NEXT_INSTRUCTIONS = [
+  "The agent just called muton_tree on a shared durable-memory hive.",
+  "Pick the single best NEXT action:",
+  "- get: browse with muton_ls then read cards with muton_get",
+  "- search: semantic muton_search",
+  "- tool: leave the hive and use normal task tools",
+  "Use only the question and the tree map. Do not assume a specific domain or schema beyond what they show.",
+].join(" ");
+
+function formatJevDirective(choice, confidence, probabilities) {
+  const conf =
+    typeof confidence === "number" ? ` confidence=${confidence.toFixed(2)}` : "";
+  const probs =
+    probabilities && typeof probabilities === "object"
+      ? ` probs=${JSON.stringify(probabilities)}`
+      : "";
+  if (choice === "get") {
+    return [
+      `JEV NEXT (required): get${conf}${probs}`,
+      "Call muton_ls on promising folder(s) from the tree, then muton_get 1–2 slugs.",
+      "Do not muton_search first. Do not jump to task tools until those cards are checked.",
+    ].join("\n");
+  }
+  if (choice === "search") {
+    return [
+      `JEV NEXT (required): search${conf}${probs}`,
+      "Call muton_search with a focused query about the question.",
+      "Skip muton_ls/get unless search returns a slug worth fetching in full.",
+    ].join("\n");
+  }
+  return [
+    `JEV NEXT (required): tool${conf}${probs}`,
+    "Hive memory is unlikely to help for this question given the tree.",
+    "Proceed with task tools. Skip further Muton browse/search unless needed later.",
+  ].join("\n");
+}
+
+/**
+ * Typesafe System One Choice after muton_tree.
+ * Returns null when disabled / no key / request failed (tree still succeeds).
+ */
+async function jevChoiceAfterTree(treeText, treeMeta) {
+  if (!envFlag("MUTON_JEV_CHOICE", true)) {
+    return null;
+  }
+  const apiKey = (process.env.TYPESAFE_API_KEY || "").trim();
+  if (!apiKey) {
+    logHook({ event: "jev_choice_skip", reason: "no-TYPESAFE_API_KEY" });
+    return null;
+  }
+  const question = readQuestionText();
+  const model = (process.env.MUTON_JEV_MODEL || "jev-latest").trim();
+  const base = (
+    process.env.TYPESAFE_API_BASE || "https://api.typesafe.ai/v1"
+  ).replace(/\/$/, "");
+  const state = {
+    question: question || "(question unavailable)",
+    muton_tree: treeText.slice(0, 12_000),
+    total_cards: treeMeta?.total_cards ?? null,
+    path_assignments: treeMeta?.path_assignments ?? null,
+  };
+  const body = {
+    model,
+    state,
+    questions: {
+      next: {
+        type: "choice",
+        instructions: JEV_NEXT_INSTRUCTIONS,
+        criteria: JEV_NEXT_CRITERIA,
+      },
+    },
+  };
+  const started = Date.now();
+  try {
+    const res = await fetch(`${base}/systemone`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+        accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    const raw = await res.text();
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      logHook({
+        event: "jev_choice_error",
+        status: res.status,
+        body: raw.slice(0, 400),
+        ms: Date.now() - started,
+      });
+      return null;
+    }
+    const answer = data?.answers?.next;
+    const choice = answer?.choice;
+    if (choice !== "get" && choice !== "search" && choice !== "tool") {
+      logHook({
+        event: "jev_choice_error",
+        reason: "bad-choice",
+        answer,
+        ms: Date.now() - started,
+      });
+      return null;
+    }
+    const result = {
+      choice,
+      confidence: answer?.confidence ?? null,
+      probabilities: answer?.probabilities ?? null,
+      model: data?.model ?? model,
+      usage: data?.usage ?? null,
+      question_chars: question.length,
+      ms: Date.now() - started,
+    };
+    logHook({ event: "jev_choice", ...result });
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logHook({
+      event: "jev_choice_error",
+      error: msg.slice(0, 200),
+      ms: Date.now() - started,
+    });
+    return null;
   }
 }
 
@@ -293,12 +458,24 @@ export default function (pi) {
         const text = data
           ? `Muton hive map (root=${data.root}): ${data.total_cards} cards, ${data.path_assignments} path assignments\n${data.text}`
           : out || "(empty)";
+        // Soft steer (Pi cannot force the next tool): append Jev Choice directive.
+        const jev = await jevChoiceAfterTree(text, {
+          total_cards: data?.total_cards,
+          path_assignments: data?.path_assignments,
+        });
+        const directive = jev
+          ? formatJevDirective(jev.choice, jev.confidence, jev.probabilities)
+          : null;
+        const fullText = directive ? `${text}\n\n${directive}` : text;
         return {
-          content: [{ type: "text", text }],
+          content: [{ type: "text", text: fullText }],
           details: {
             total_cards: data?.total_cards,
             path_assignments: data?.path_assignments,
             root: data?.root,
+            jev_choice: jev?.choice ?? null,
+            jev_confidence: jev?.confidence ?? null,
+            jev_probabilities: jev?.probabilities ?? null,
           },
         };
       } catch (err) {
