@@ -30255,7 +30255,7 @@ function createCompleter() {
 // src/reflection/jev-merge.ts
 import { appendFileSync, mkdirSync as mkdirSync7 } from "fs";
 import { join as join8 } from "path";
-var DEFAULT_THRESHOLD = 0.6;
+var DEFAULT_THRESHOLD = 0.5;
 var NOUL_INSTRUCTIONS = "Should these two knowledge cards be merged into one? Answer yes if they are the same durable fact, near-duplicates, or one is a refinement/extension of the other. Answer no if they are distinct durable facts that should remain separate cards.";
 var NOUL_CRITERIA = {
   true: "Same fact, near-duplicate, or refinement \u2014 merge into one card",

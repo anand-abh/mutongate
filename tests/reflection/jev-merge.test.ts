@@ -50,9 +50,9 @@ describe("jevMergeThreshold / enabled", () => {
     else process.env.TYPESAFE_API_KEY = prevK;
   });
 
-  test("default threshold 0.6", () => {
+  test("default threshold 0.5", () => {
     delete process.env.MUTON_JEV_MERGE_THRESHOLD;
-    expect(jevMergeThreshold()).toBe(0.6);
+    expect(jevMergeThreshold()).toBe(0.5);
   });
 
   test("enabled needs key", () => {
