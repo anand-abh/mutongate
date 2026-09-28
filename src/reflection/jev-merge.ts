@@ -33,7 +33,7 @@ export type JevMergeDecision = {
   model?: string;
 };
 
-const DEFAULT_THRESHOLD = 0.5;
+const DEFAULT_THRESHOLD = 0.8;
 
 const NOUL_INSTRUCTIONS =
   "Should these two knowledge cards be merged into one? Answer yes if they are the same durable fact, near-duplicates, or one is a refinement/extension of the other. Answer no if they are distinct durable facts that should remain separate cards.";
